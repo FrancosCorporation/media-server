@@ -1,0 +1,14 @@
+/* # leia o arquivo @PROJECT_CONTEXT.md , se já leu desconsidere */
+/* ==========================================
+   FRANCOS CORP - LAYOUT PRINCIPAL
+   ========================================== */
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+/* Root-level reset para permitir layout full-width */
+:root {
+  --header-height: 4rem;
+}
