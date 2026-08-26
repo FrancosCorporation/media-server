@@ -56,17 +56,23 @@ export default function Search() {
 
   const applyLibraryData = useCallback((mMovies: any[], mSeries: any[]) => {
     setMovieIds(new Set(mMovies.map((m: any) => m.tmdbId)));
-    setSeriesIds(new Set(mSeries.map((s: any) => s.tvdbId)));
+    // Indexa AMBOS os ids da série: resultados de busca trazem id TMDB,
+    // mas a biblioteca pode ter sido criada só com tvdbId.
+    const sidSet = new Set<number>();
+    const smap = new Map<number, string>();
+    const slib = new Map<number, any>();
+    mSeries.forEach((s: any) => {
+      if (s.tvdbId) { sidSet.add(s.tvdbId); smap.set(s.tvdbId, s._id); slib.set(s.tvdbId, s); }
+      if (s.tmdbId) { sidSet.add(s.tmdbId); if (!smap.has(s.tmdbId)) smap.set(s.tmdbId, s._id); }
+    });
+    setSeriesIds(sidSet);
+    setSeriesIdMap(smap);
+    setSeriesLibItems(slib);
     const mmap = new Map<number, string>();
     const mlib = new Map<number, any>();
     mMovies.forEach((m: any) => { if (m.tmdbId) { mmap.set(m.tmdbId, m._id); mlib.set(m.tmdbId, m); } });
     setMovieIdMap(mmap);
     setMovieLibItems(mlib);
-    const smap = new Map<number, string>();
-    const slib = new Map<number, any>();
-    mSeries.forEach((s: any) => { if (s.tvdbId) { smap.set(s.tvdbId, s._id); slib.set(s.tvdbId, s); } });
-    setSeriesIdMap(smap);
-    setSeriesLibItems(slib);
   }, []);
 
   const fetchLibrary = useCallback(async () => {
@@ -294,7 +300,7 @@ export default function Search() {
             <h2 className="text-lg font-semibold text-white mb-4">{t('search.seriesSection')} ({series.length})</h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
               {series.map((s) => {
-                const alreadyAdded = seriesIds.has(s.id);
+                const alreadyAdded = seriesIds.has((s as any).tvdbId) || seriesIds.has(s.id);
                 return (
                   <MediaCard
                     key={`series-${s.id}`}

@@ -86,15 +86,24 @@ export default function MediaDashboard() {
   const refreshLibrary = async () => {
     try {
       const lib = await mediaApi.getLibrary();
+      // Indexa TODOS os identificadores: um título pode ter sido adicionado
+      // só com tvdbId (busca) ou só com tmdbId (trending) — Regra 2 anti-duplicidade.
       const ids = new Set<number>();
       [...(lib.movies || []), ...(lib.series || [])].forEach((item: any) => {
         if (item.tmdbId) ids.add(item.tmdbId);
+        if (item.tvdbId) ids.add(item.tvdbId);
+        if (item.id && typeof item.id === 'number') ids.add(item.id);
       });
       setLibraryItems(ids);
     } catch { /* ignore */ }
   };
 
   useEffect(() => { refreshLibrary(); }, []);
+  useEffect(() => {
+    const onFocus = () => { refreshLibrary(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   const handleSearchKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && searchQuery.trim()) {
@@ -197,7 +206,9 @@ export default function MediaDashboard() {
               </Link>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {trending.map((item: any, i: number) => (
+              {trending.map((item: any, i: number) => {
+                const inLib = libraryItems.has(item.tmdbId ?? item.id);
+                return (
                 <MediaCard
                   key={`${item.tmdbId}-${i}`}
                   title={item.title}
@@ -209,7 +220,7 @@ export default function MediaDashboard() {
                   mediaType={item.mediaType === 'tv' ? 'series' : 'movie'}
                   tmdbId={item.tmdbId}
                   onClick={() => setPreview(item)}
-                  onAdd={!libraryItems.has(item.tmdbId) ? () => {
+                  onAdd={!inLib ? () => {
                     const isSeries = item.mediaType === 'tv';
                     if (isSeries) {
                       mediaApi.addSeries(0, item.title, item.year || 0, { tmdbId: item.tmdbId, poster: item.poster, overview: item.overview, genres: item.genres, rating: item.rating }).then(() => {
@@ -223,9 +234,10 @@ export default function MediaDashboard() {
                       }).catch(() => {});
                     }
                   } : undefined}
-                  added={libraryItems.has(item.tmdbId)}
+                  added={inLib}
                 />
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
@@ -276,9 +288,12 @@ export default function MediaDashboard() {
               </Link>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {recommended.map((item: any, i: number) => (
+              {recommended.map((item: any, i: number) => {
+                const recId = item.tmdbId ?? item.id;
+                const inLib = libraryItems.has(recId);
+                return (
                 <MediaCard
-                  key={item.id || i}
+                  key={`${item.tmdbId}-${item.id || i}`}
                   title={item.title}
                   year={item.year}
                   poster={item.poster}
@@ -286,32 +301,33 @@ export default function MediaDashboard() {
                   rating={item.rating}
                   genres={item.genres}
                   mediaId={item._id}
-                  tmdbId={item.tmdbId || item.id}
+                  tmdbId={recId}
                   mediaType={item.seasons !== undefined ? 'series' : 'movie'}
                    onClick={() => setPreview(item)}
-                   added={libraryItems.has(item.id)}
-                   adding={addingIds.has(item.id)}
-                   onAdd={libraryItems.has(item.id) ? undefined : () => {
-                     setAddingIds(prev => new Set(prev).add(item.id));
-                     mediaApi.addMovie(item.id, item.title, item.year, {
+                   added={inLib}
+                   adding={addingIds.has(recId)}
+                   onAdd={inLib ? undefined : () => {
+                     setAddingIds(prev => new Set(prev).add(recId));
+                     mediaApi.addMovie(item.tmdbId || item.id, item.title, item.year, {
                        poster: item.poster, overview: item.overview,
                        genres: item.genres, rating: item.rating,
                      }).then(() => {
                        toast.success(t('dashboard.movieAdded'), `${item.title} ${t('dashboard.movieAddedDesc')}`);
-                       setLibraryItems(prev => new Set(prev).add(item.id));
+                       setLibraryItems(prev => new Set(prev).add(recId));
                      })
                      .catch((err: any) => {
                        if (err?.message?.includes('409') || err?.message?.includes('já adicionado')) {
                          toast.info(t('dashboard.alreadyAdded'), `${item.title} ${t('dashboard.alreadyInLibrary')}`);
-                         setLibraryItems(prev => new Set(prev).add(item.id));
+                         setLibraryItems(prev => new Set(prev).add(recId));
                        } else {
                          toast.error(t('dashboard.errorAdding'), err instanceof Error ? err.message : t('dashboard.tryAgain'));
                        }
                      })
-                     .finally(() => setAddingIds(prev => { const s = new Set(prev); s.delete(item.id); return s; }));
+                     .finally(() => setAddingIds(prev => { const s = new Set(prev); s.delete(recId); return s; }));
                    }}
                 />
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
@@ -366,8 +382,8 @@ export default function MediaDashboard() {
           isMovie={preview.seasons === undefined}
           onClose={() => setPreview(null)}
           onPlay={preview.status === 'available' ? () => { setPreview(null); setPlayingMedia({ id: preview._id, type: preview.seasons !== undefined ? 'series' : 'movie' }); } : undefined}
-          added={libraryItems.has(preview.id)}
-          onAdd={!preview._id && preview.id && !libraryItems.has(preview.id) ? () => {
+          added={libraryItems.has(preview.tmdbId ?? preview.id)}
+          onAdd={!preview._id && preview.id && !libraryItems.has(preview.tmdbId ?? preview.id) ? () => {
             const isSeries = preview.seasons !== undefined;
             setAddingIds(prev => new Set(prev).add(preview.id));
             if (isSeries) {

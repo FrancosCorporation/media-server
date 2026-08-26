@@ -13,42 +13,24 @@ interface DownloadProgressProps {
   posterFallback?: string;
   status: DownloadStatus;
   progress?: number;
-  speed?: number;
-  eta?: number;
-  seeds?: number;
-  peers?: number;
   quality?: string;
   torrentState?: string;
   torrentStateLabel?: string;
-  size?: number;
-  sizeFormatted?: string;
   mediaId?: string;
   tmdbId?: number;
   mediaType?: 'movie' | 'series';
+  itemCount?: number;
+  seasons?: { season: number; progress: number; total: number; downloading: number }[];
   onWatch?: () => void;
   onDelete?: () => void;
   onRetry?: () => void;
-}
-
-function formatSpeed(bytesPerSec?: number): string {
-  if (!bytesPerSec) return '—';
-  if (bytesPerSec > 1e6) return `${(bytesPerSec / 1e6).toFixed(1)} MB/s`;
-  if (bytesPerSec > 1e3) return `${(bytesPerSec / 1e3).toFixed(1)} KB/s`;
-  return `${bytesPerSec.toFixed(0)} B/s`;
-}
-
-function formatETA(seconds?: number): string {
-  if (!seconds || seconds <= 0) return '—';
-  if (seconds > 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-  if (seconds > 60) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  return `${seconds}s`;
 }
 
 export default function DownloadProgress({
   title, poster, posterFallback, status, progress,
   torrentState, torrentStateLabel,
   onWatch, onDelete, onRetry,
-  mediaId, mediaType, tmdbId,
+  mediaId, mediaType, tmdbId, itemCount, seasons,
 }: DownloadProgressProps) {
   const { t } = useI18n();
   const safeMediaId = mediaId;
@@ -121,9 +103,41 @@ export default function DownloadProgress({
                 style={{ width: `${isQueued ? 0 : Math.min(progressValue, 100)}%` }}
               />
             </div>
-            <span className="text-xs text-gray-500 text-right">
-              {isQueued ? t('downloadStatus.waiting') : `${progressValue.toFixed(0)}%`}
-            </span>
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span>
+                {isQueued ? t('downloadStatus.waiting') : `${progressValue.toFixed(0)}%`}
+                {itemCount && itemCount > 1 && <span className="ml-1 text-gray-600">({itemCount})</span>}
+              </span>
+            </div>
+
+            {seasons && seasons.length > 0 && (
+              <div className="flex flex-col gap-1.5 mt-2 pt-2 border-t border-white/[0.06]">
+                {seasons.map((s) => (
+                  <div key={s.season} className="flex items-center gap-2">
+                    <span className="text-[10px] text-gray-500 w-7 shrink-0 text-right">
+                      S{s.season < 10 ? `0${s.season}` : s.season}
+                    </span>
+                    <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all duration-700',
+                          s.progress >= 100 ? 'bg-green-500' :
+                          s.downloading > 0 ? 'bg-sky-500' : 'bg-blue-400/60'
+                        )}
+                        style={{ width: `${Math.min(s.progress, 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-gray-500 w-8 text-right">
+                      {s.progress >= 100 ? (
+                        <span className="text-green-400">100%</span>
+                      ) : (
+                        `${s.progress.toFixed(0)}%`
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

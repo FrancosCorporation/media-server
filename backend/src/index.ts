@@ -24,13 +24,15 @@ import { MetadataService } from './services/MetadataService';
 import { CoverCacheService } from './services/CoverCacheService';
 import { ConversionQueueService } from './services/ConversionQueueService';
 import { MediaPostProcessorService } from './services/MediaPostProcessorService';
+import { TorrentValidationService } from './services/TorrentValidationService';
+import { ApacheTorrentService } from './services/ApacheTorrentService';
 import { createDownloadIfUnique } from './utils/dedupe';
 import { MediaScannerService } from './services/MediaScannerService';
 import { PendingRetryService } from './services/PendingRetryService';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { logger } from './utils/logger';
 import { normalizeTitleForMatch, extractSeasonNumber } from './utils/mediaOrganizer';
-import { MIN_SPAM_SIZE_BYTES, isLikelySpam } from './utils/constants';
+import { MIN_SPAM_SIZE_BYTES, isLikelySpam, isMaliciousFileName } from './utils/constants';
 
 import axios from 'axios';
 
@@ -62,6 +64,9 @@ const COMPONENT = 'Server';
 const PORT = parseInt(process.env.API_PORT || '4000', 10);
 
 const MEDIA_ROOTS = ['/media/movies', '/media/series', '/downloads', '/media/transcode'];
+
+// Tracking de torrents já validados pelo "Teste do Pedacinho" (evita re-validar)
+const validatedTorrents = new Set<string>();
 
 function fileSizeOf(filePath: string): number | undefined {
   try {
@@ -655,6 +660,70 @@ async function main() {
         });
       }
 
+      // ── Teste do Pedacinho: validar torrents parcialmente baixados ──────
+      // Quando um torrent atinge ~20MB, pausa, roda ffprobe e decide se continua.
+      for (const t of torrents) {
+        if (!t.hash) continue;
+        if (TorrentValidationService.needsValidation(t.downloaded || 0, t.size || 0, t.state)) {
+          // Verificar se já foi validado neste ciclo
+          if (!validatedTorrents.has(t.hash)) {
+            validatedTorrents.add(t.hash);
+            const dl = await Download.findOne({ hash: t.hash });
+            if (dl) {
+              const savePath = t.name ? `/media/${dl.mediaType === 'series' ? 'series' : 'movies'}` : '/downloads';
+              TorrentValidationService.validatePartialDownload(t.hash, savePath, t.name || 'unknown')
+                .then(async (result) => {
+                  if (!result.valid) {
+                    logger.error(COMPONENT, `[TESTE PEDACINHO] Torrent corrompido detectado: "${t.name}" — ${result.reason}`);
+
+                    // Tentar próximo candidato da ranked list
+                    const nextCandidate = ApacheTorrentService.getNextCandidateForRetry(t.hash);
+                    if (nextCandidate) {
+                      logger.info(COMPONENT, `[TESTE PEDACINHO] Tentando próximo candidato: "${nextCandidate.name}" (hash: ${nextCandidate.hash})`);
+                      // Retomar o próximo candidato (já está pausado no qBittorrent)
+                      await QBittorrentService.resumeTorrent(nextCandidate.hash);
+                      // Atualizar o hash do download
+                      dl.hash = nextCandidate.hash;
+                      dl.status = 'downloading';
+                      await dl.save().catch(() => {});
+                      downloadEvents.push({
+                        _id: dl._id.toString(),
+                        status: 'downloading',
+                        torrentState: 'downloading',
+                        torrentStateLabel: `Retry: ${nextCandidate.name}`,
+                      });
+                    } else {
+                      // Não há mais candidatos → marcar como erro
+                      logger.error(COMPONENT, `[TESTE PEDACINHO] Sem mais candidatos para retry: "${t.name}"`);
+                      dl.status = 'error';
+                      await dl.save().catch(() => {});
+                      if (dl.mediaType === 'movie') {
+                        await Movie.findByIdAndUpdate(dl.mediaId, { status: 'error' });
+                      } else {
+                        await Series.findByIdAndUpdate(dl.mediaId, { status: 'error' });
+                      }
+                      invalidateRecommendationsCache();
+                      downloadEvents.push({
+                        _id: dl._id.toString(),
+                        status: 'error',
+                        torrentState: 'error',
+                        torrentStateLabel: 'Todos os torrents corrompidos (ffprobe falhou)',
+                      });
+                    }
+                  }
+                })
+                .catch((err) => {
+                  logger.warn(COMPONENT, `[TESTE PEDACINHO] Erro na validação: ${err.message}`);
+                });
+            }
+          }
+        }
+        // Limpar do tracking quando o download sair da faixa de validação
+        if (t.downloaded > 500 * 1024 * 1024) {
+          validatedTorrents.delete(t.hash);
+        }
+      }
+
       // Atualiza status de Movie/Series quando download é concluído
       const completedStates = ['uploading', 'stalledUP', 'pausedUP'];
       for (const t of torrents) {
@@ -676,6 +745,34 @@ async function main() {
               }
             }
             if (completedDl) {
+              // ── DEFESA ANTI-MALWARE ──────────────────────────────────
+              // Escaneia os arquivos do torrent procurando executáveis.
+              // Bloqueia ANTES de marcar mídia como available. Caso real:
+              // "Reacher/Ted Lasso .exe" (ago/2026) — mesmo payload 962MB.
+              try {
+                const tFiles: Array<{ name: string }> = t.hash
+                  ? await QBittorrentService.getTorrentFiles(t.hash).catch(() => [])
+                  : [];
+                const nameCandidates = tFiles.length > 0 ? tFiles.map(f => f.name) : [t.name];
+                const badFile = nameCandidates
+                  .map(n => isMaliciousFileName(n))
+                  .find(r => r.malicious);
+                if (badFile) {
+                  logger.error(COMPONENT, `[ANTI-MALWARE] Executável detectado (${badFile.reason}) em "${t.name}" — removendo torrent+dados`);
+                  if (t.hash) await QBittorrentService.deleteTorrent(t.hash, true).catch(() => {});
+                  completedDl.status = 'error';
+                  await completedDl.save();
+                  if (completedDl.mediaType === 'movie') {
+                    await Movie.findByIdAndUpdate(completedDl.mediaId, { status: 'error' });
+                  } else {
+                    await Series.findByIdAndUpdate(completedDl.mediaId, { status: 'error' });
+                  }
+                  invalidateRecommendationsCache();
+                  continue;
+                }
+              } catch (scanErr: any) {
+                logger.warn(COMPONENT, `[ANTI-MALWARE] Scan falhou para "${t.name}": ${scanErr.message}`);
+              }
               // Se o download já está complete mas o movie/series ainda não, atualiza
               if (completedDl.status === 'complete' && t.progress >= 100) {
                 if (completedDl.mediaType === 'movie') {
@@ -708,13 +805,18 @@ async function main() {
                   await updateMediaPath(completedDl.mediaId, 'series', completedDl.title, series?.year);
                 }
                 invalidateRecommendationsCache();
-                // Post-processing: always trigger conversion check, even for already-complete downloads
+                // Post-processing: trigger conversion check only if not already done/running/queued
                 setTimeout(() => {
                   const mediaType = completedDl!.mediaType;
                   const mediaId = completedDl!.mediaId;
                   const title = completedDl!.title;
                   (async () => {
                     try {
+                      // Skip if already converted or in queue
+                      const convStatus = ConversionQueueService.getStatus(mediaId);
+                      if (convStatus.conversionStatus === 'done' || convStatus.conversionStatus === 'running' || convStatus.conversionStatus === 'queued') {
+                        return; // Already processed or in progress
+                      }
                       let media: any = null;
                       if (mediaType === 'movie') media = await Movie.findById(mediaId);
                       else media = await Series.findById(mediaId);
@@ -805,51 +907,7 @@ async function main() {
                 });
               }
               logger.info(COMPONENT, `Download completed: ${t.name} (hash: ${t.hash})`);
-              
-              // P6 ( ZERO DELAY): pré-conversão do arquivo para H.264/AAC/MP4
-              // em background assim que o download termina. O arquivo é
-              // convertido ATOMICAMENTE (temp→rename) no mesmo diretório e o
-              // DB é atualizado. Assim o usuário só precisa clicar Play.
-              setTimeout(() => {
-                const mediaType = completedDl!.mediaType;
-                const mediaId = completedDl!.mediaId;
-                const title = completedDl!.title;
-                (async () => {
-                  try {
-                    let media: any = null;
-                    if (mediaType === 'movie') media = await Movie.findById(mediaId);
-                    else media = await Series.findById(mediaId);
-                    if (!media) return;
-
-                    let fullPath: string | null = null;
-                    if (media.path) {
-                      for (const root of MEDIA_ROOTS) {
-                        const candidate = path.join(root, String(media.path));
-                        try {
-                          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-                            fullPath = candidate;
-                            break;
-                          }
-                        } catch { /* continue */ }
-                      }
-                    }
-                    if (!fullPath) {
-                      for (const root of MEDIA_ROOTS) {
-                        fullPath = findVideoFileByTitle(root, title, media?.year);
-                        if (fullPath) break;
-                      }
-                    }
-
-                    if (fullPath) {
-                      await MediaPostProcessorService.process(fullPath, mediaId, mediaType);
-                    } else {
-                      logger.warn(COMPONENT, `Post-download: could not find file for ${title}`);
-                    }
-                  } catch (err: any) {
-                    logger.warn(COMPONENT, `Post-download conversion error: ${err.message}`);
-                  }
-                })();
-              }, 8000); // espera 8s para garantir que o arquivo foi totalmente escrito e finalizado
+              // Post-processing já é feito pelo primeiro setTimeout acima (P6 ZERO DELAY)
 
               // Trigger library scan to sync DB with disk after download completes
               MediaScannerService.scanLibrary().catch((err) => {
@@ -1117,7 +1175,8 @@ async function main() {
     if (items.length === 0) return;
 
     // Verificar quais realmente não têm arquivo em disco
-    const MEDIA_ROOTS = ['/media/movies', '/media/series', '/downloads', '/media/transcode'];
+const MEDIA_ROOTS = ['/media/movies', '/media/series', '/downloads', '/media/transcode'];
+
     const toDelete: typeof items = [];
 
     for (const item of items) {
@@ -1233,9 +1292,6 @@ async function main() {
         await cascadeDeleteErrorMedia();
 
         // 4.5. Catch-up: pós-conversão para mídias disponíveis com arquivos incompatíveis.
-        //      O container pode ter reiniciado durante o download (status travado em 'downloading')
-        //      e o post-processing nunca disparou. Aqui detectamos filmes/séries 'available' cujo
-        //      arquivo no disco ainda é MKV/AC3/HEVC e rodamos a conversão.
         (async () => {
           try {
             const availableMovies = await Movie.find({ status: 'available' });
@@ -1250,17 +1306,15 @@ async function main() {
                 try { if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { fp = cand; break; } } catch {}
               }
               if (!fp) continue;
+              const convStatus = ConversionQueueService.getStatus(m._id.toString());
+              if (convStatus.conversionStatus === 'queued' || convStatus.conversionStatus === 'running' || convStatus.conversionStatus === 'done') {
+                continue;
+              }
               try {
-                const { spawnSync } = require('child_process');
-                const r = spawnSync('/usr/lib/jellyfin-ffmpeg/ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_streams', fp], { timeout: 10000, encoding: 'utf8' });
-                if (r.status === 0) {
-                  const d = JSON.parse(r.stdout);
-                  const a = (d.streams?.find((s: any) => s.codec_type === 'audio')?.codec_name || '').toLowerCase();
-                  if (a && !['aac', 'mp3', 'opus'].includes(a)) {
-                    logger.info(COMPONENT, `Catch-up post-process: ${m.title} (audio=${a})`);
-                    await MediaPostProcessorService.process(fp, m._id.toString(), 'movie');
-                    converted++;
-                  }
+                const result = await MediaPostProcessorService.process(fp, m._id.toString(), 'movie');
+                if (result && !result.skipped) {
+                  logger.info(COMPONENT, `Catch-up: ${m.title} queued for conversion`);
+                  converted++;
                 }
               } catch {}
             }
@@ -1273,21 +1327,20 @@ async function main() {
                 try { if (fs.existsSync(cand) && fs.statSync(cand).isFile()) { fp = cand; break; } } catch {}
               }
               if (!fp) continue;
+              const convStatus = ConversionQueueService.getStatus(s._id.toString());
+              if (convStatus.conversionStatus === 'queued' || convStatus.conversionStatus === 'running' || convStatus.conversionStatus === 'done') {
+                continue;
+              }
               try {
-                const { spawnSync } = require('child_process');
-                const r = spawnSync('/usr/lib/jellyfin-ffmpeg/ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_streams', fp], { timeout: 10000, encoding: 'utf8' });
-                if (r.status === 0) {
-                  const d = JSON.parse(r.stdout);
-                  const a = (d.streams?.find((s: any) => s.codec_type === 'audio')?.codec_name || '').toLowerCase();
-                  if (a && !['aac', 'mp3', 'opus'].includes(a)) {
-                    logger.info(COMPONENT, `Catch-up post-process: ${s.title} (audio=${a})`);
-                    await MediaPostProcessorService.process(fp, s._id.toString(), 'series');
-                    converted++;
-                  }
+                const result = await MediaPostProcessorService.process(fp, s._id.toString(), 'series');
+                if (result && !result.skipped) {
+                  logger.info(COMPONENT, `Catch-up: ${s.title} queued for conversion`);
+                  converted++;
                 }
               } catch {}
             }
-            if (converted > 0) logger.info(COMPONENT, `Catch-up post-processing: ${converted} incompatible files converted`);
+            if (converted > 0) logger.info(COMPONENT, `Catch-up post-processing: ${converted} incompatible files queued`);
+            else logger.info(COMPONENT, `Catch-up post-processing: all files compatible or already queued`);
           } catch (err: any) {
             logger.warn(COMPONENT, `Catch-up post-processing failed: ${err.message}`);
           }

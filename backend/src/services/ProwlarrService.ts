@@ -66,6 +66,27 @@ async function resolveMagnet(magnetUrl: string): Promise<string | null> {
   }
 }
 
+// Fallback: para séries, quando não há PT-BR, aceita o melhor EN disponível.
+// Critérios relaxados: seeds > 0, H.264 (não HEVC), 720p/1080p, sem blacklist de idioma incompatível.
+// A conversão (MediaPostProcessor) lida com a faixa de áudio disponível.
+const FALLBACK_EN_BLACKLIST = /\b(french|vff|vf2?|vfq|fre\b|fra\b|subbed|ita|somm|rus(sian)?\b|latino)\b/i;
+const FALLBACK_EN_WHITELIST = /\b(eng\b|english|dual|pt[-_.]?br|portugu[eê]s|nacional|esubs?|es \[?\d*\]?)\b/i;
+
+function isFallbackAcceptable(title: string): boolean {
+  const t = title.toLowerCase();
+  if (FALLBACK_EN_BLACKLIST.test(t)) return false;
+  // Aceita se tiver algum marcador de idioma (ENG, EN, ESubs, etc.) — evita títulos genéricos
+  return FALLBACK_EN_WHITELIST.test(t);
+}
+
+function isH264Only(title: string): boolean {
+  return /(?:x264|h\.?264|avc)/i.test(title) && !/(?:x265|hevc|h\.?265|10bit)/i.test(title);
+}
+
+function is1080p(title: string): boolean {
+  return /(?:1080p|1080|FHD)/i.test(title);
+}
+
 export async function searchProwlarr(
   query: string,
   isSeries = true,
@@ -89,11 +110,12 @@ export async function searchProwlarr(
 
     const results: BRResult[] = [];
     const batch = items.slice(0, 15);
+
     for (const item of batch) {
       if (!item.magnetUrl) continue;
       const magnet = await resolveMagnet(item.magnetUrl);
       if (!magnet) continue;
-      
+
       if (!isPTBR(item.title)) continue;
 
       results.push({
@@ -106,7 +128,31 @@ export async function searchProwlarr(
       });
     }
 
-    logger.info(COMPONENT, `Prowlarr: ${results.length} PT-BR magnets (from ${items.length} hits) for "${query}"`);
+    // Fallback: para séries, se nenhum PT-BR, usa o melhor EN disponível
+    if (isSeries && results.length === 0) {
+      logger.info(COMPONENT, `No PT-BR results for "${query}", trying English fallback`);
+      for (const item of batch) {
+        if (!item.magnetUrl) continue;
+        const magnet = await resolveMagnet(item.magnetUrl);
+        if (!magnet) continue;
+        if (!isFallbackAcceptable(item.title)) continue;
+        if (!isH264Only(item.title)) continue;
+        if (!is1080p(item.title)) continue;
+        if (item.seeders <= 0) continue;
+
+        results.push({
+          title: item.title,
+          magnet,
+          source: `Prowlarr:${item.indexer}`,
+          seeds: item.seeders || 0,
+          seasonNumber: extractSeasonFromPageTitle(item.title) || undefined,
+          seriesTitle: query,
+        });
+      }
+      logger.info(COMPONENT, `Prowlarr fallback EN: ${results.length} magnets for "${query}"`);
+    }
+
+    logger.info(COMPONENT, `Prowlarr: ${results.length} magnets (PT-BR + fallback) for "${query}"`);
     return results;
   } catch (err: any) {
     logger.warn(COMPONENT, `Prowlarr failed: ${err.message}`);

@@ -274,24 +274,10 @@ export default function MediaCard({
           {(status === 'downloading' || (status === 'available' && watchPercentage !== undefined)) && (
             <div className="flex items-center justify-between text-[11px] text-gray-500 mt-auto pt-1 border-t border-white/5">
               {status === 'downloading' && typeof downloadProgress === 'number' && (
-                <>
-                  <span className="flex items-center gap-1 text-sky-400">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    {Math.round(downloadProgress)}%
-                  </span>
-                  {downloadSpeed && (
-                    <span className="flex items-center gap-1">
-                      {(downloadSpeed / 1024 / 1024).toFixed(1)} MB/s
-                    </span>
-                  )}
-                  {downloadEta && downloadEta > 0 && (
-                    <span className="flex items-center gap-1">
-                      {downloadEta > 3600
-                        ? `${Math.floor(downloadEta / 3600)}h ${Math.floor((downloadEta % 3600) / 60)}m`
-                        : `${Math.floor(downloadEta / 60)}m`}
-                    </span>
-                  )}
-                </>
+                <span className="flex items-center gap-1 text-sky-400">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {Math.round(downloadProgress)}%
+                </span>
               )}
               {status === 'available' && watchPercentage !== undefined && (
                 <span className="flex items-center gap-1 text-green-400">

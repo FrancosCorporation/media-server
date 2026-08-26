@@ -120,3 +120,44 @@ export function isSpamFileName(fileName: string, fileSizeBytes?: number): boolea
   }
   return false;
 }
+
+/**
+ * DEFESA ANTI-MALWARE — extensões que NUNCA pertencem a um release de vídeo.
+ *
+ * Caso real (21/08/2026): "Reacher S04E05 ...-CAKES.exe" e
+ * "Ted Lasso S04E04 ...-MeGusta .exe" eram o MESMO payload (~962MB, header
+ * PE "MZ"), seedou ratio >10 antes da remoção manual. Releases legítimos
+ * contêm apenas vídeo/áudio/legenda/NFO/JPG.
+ */
+export const DANGEROUS_FILE_EXTS = [
+  // Windows executáveis/instaladores
+  '.exe', '.msi', '.scr', '.bat', '.cmd', '.com', '.pif', '.hta', '.cpl',
+  // Scripts (Windows scripting host / PowerShell)
+  '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.ps1', '.psm1',
+  // Multiplataforma / outros sistemas
+  '.jar', '.lnk', '.apk', '.appimage', '.deb', '.rpm', '.dmg', '.pkg',
+];
+
+/**
+ * Detecta arquivo malicioso pelo NOME (extensão executável).
+ * Diferente de spam: malware é bloqueado INDEPENDENTE de tamanho/título —
+ * um ".exe" jamais é conteúdo válido, mesmo com 962MB e nome perfeito.
+ */
+export function isMaliciousFileName(
+  fileName: string
+): { malicious: boolean; reason: string } {
+  const lower = fileName.toLowerCase();
+  for (const ext of DANGEROUS_FILE_EXTS) {
+    if (lower.endsWith(ext)) {
+      return {
+        malicious: true,
+        reason: `extensão executável '${ext}' em release de vídeo`,
+      };
+    }
+  }
+  // Disfarce com dupla extensão no meio do nome (ex: "filme.mp4.exe.bak")
+  if (lower.includes('.exe.')) {
+    return { malicious: true, reason: "'.exe' embutido no nome do arquivo" };
+  }
+  return { malicious: false, reason: '' };
+}

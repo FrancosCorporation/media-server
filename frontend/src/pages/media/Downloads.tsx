@@ -30,6 +30,25 @@ function normalizeName(name: string): string {
     .trim();
 }
 
+function extractSeasonNumber(title: string, torrentName?: string): number {
+  // Try from torrent name first (more reliable: "Ted.Lasso.S03E02" → 3)
+  const sources = [torrentName || '', title || ''];
+  for (const src of sources) {
+    if (!src) continue;
+    // S01E01 / s01e01 patterns
+    const seMatch = src.match(/\b[Ss](\d{1,2})[Ee]\d{1,3}\b/);
+    if (seMatch) return parseInt(seMatch[1], 10);
+    // "Season 01" / "Temporada 1" patterns
+    const seasonMatch = src.match(/\b[Ss]eason[\s._-]*(\d{1,2})\b/i)
+      || src.match(/\b[Tt]emporada[\s._-]*(\d{1,2})\b/i);
+    if (seasonMatch) return parseInt(seasonMatch[1], 10);
+    // Standalone "S01" / "S02" patterns (without E)
+    const sOnlyMatch = src.match(/\b[Ss](\d{1,2})\b/);
+    if (sOnlyMatch) return parseInt(sOnlyMatch[1], 10);
+  }
+  return 1; // Default to season 1
+}
+
 function findTorrent(torrents: any[], dl: any): any | undefined {
   if (dl.hash) {
     const dlHash = String(dl.hash).toLowerCase();
@@ -213,6 +232,7 @@ export default function MediaDownloads() {
                         peers: t.peers,
                         state: t.state,
                         torrentState: t.state,
+                        torrentName: t.name || dl.torrentName,
                         status: newStatus,
                       };
                     }
@@ -295,6 +315,71 @@ export default function MediaDownloads() {
   const activeDownloads = downloads.filter((d) => d.status === 'downloading' || d.status === 'queued' || d.status === 'error');
   const completedDownloads = downloads.filter((d) => d.status === 'complete');
 
+  // Agrupa downloads ativos por mediaId — uma entrada por série/filme
+  const activeGroups = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const dl of activeDownloads) {
+      const key = dl.mediaId || dl._id || `${dl.title}-${dl.mediaType}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(dl);
+    }
+    return Array.from(map.entries()).map(([key, items]) => {
+      const downloading = items.filter((i) => i.status === 'downloading');
+      const avgProgress = items.length > 0
+        ? items.reduce((sum, i) => sum + (i.progress || 0), 0) / items.length
+        : 0;
+      const hasError = items.some((i) => i.status === 'error');
+      const hasQueued = items.some((i) => i.status === 'queued');
+      const overallStatus = hasError ? 'error' : hasQueued ? 'queued' : 'downloading';
+
+      // Find worst torrentState for display
+      const worstState = items.find((i) => i.torrentState === 'stalledDL')?.torrentState
+        || items.find((i) => i.torrentState === 'metaDL')?.torrentState
+        || (downloading.length > 0 ? 'downloading' : 'queued');
+
+      // Per-season progress (só para series)
+      const mediaType = items[0].mediaType;
+      let seasons: { season: number; progress: number; total: number; downloading: number }[] = [];
+      if (mediaType === 'series') {
+        const seasonMap = new Map<number, { progress: number; total: number; downloading: number }>();
+        for (const item of items) {
+          const season = extractSeasonNumber(item.title, item.torrentName || item.state);
+          if (!seasonMap.has(season)) seasonMap.set(season, { progress: 0, total: 0, downloading: 0 });
+          const s = seasonMap.get(season)!;
+          s.total += 1;
+          s.progress += item.progress || 0;
+          if (item.status === 'downloading') s.downloading += 1;
+        }
+        seasons = Array.from(seasonMap.entries())
+          .map(([season, data]) => ({
+            season,
+            progress: data.total > 0 ? Math.round((data.progress / data.total) * 10) / 10 : 0,
+            total: data.total,
+            downloading: data.downloading,
+          }))
+          .sort((a, b) => a.season - b.season);
+      }
+
+      return {
+        key,
+        title: items[0].title,
+        poster: items.find((i) => i.poster)?.poster || items[0].poster,
+        mediaId: items[0].mediaId,
+        mediaType: items[0].mediaType,
+        tmdbId: items[0].tmdbId,
+        status: overallStatus,
+        progress: Math.round(avgProgress * 10) / 10,
+        torrentState: worstState,
+        seasons,
+        items,
+      };
+    }).sort((a, b) => {
+      // Errors first, then downloading, then queued
+      const order = { error: 0, downloading: 1, queued: 2 };
+      return (order[a.status as keyof typeof order] ?? 3) - (order[b.status as keyof typeof order] ?? 3);
+    });
+  }, [activeDownloads]);
+
   // Agrupa concluídos por título base (ex: "The Mentalist - Temporada 1..7" → "The Mentalist")
   const completedGroups = useMemo(() => {
     const map = new Map<string, any[]>();
@@ -339,6 +424,12 @@ export default function MediaDownloads() {
         return next;
       });
     } catch { /* ignore */ }
+  };
+
+  const handleDeleteGroup = async (group: { items: any[]; mediaType?: string; mediaId?: string }) => {
+    for (const item of group.items) {
+      await handleDeleteDownload(item._id, item);
+    }
   };
 
   const handleRetryDownload = async (dl: { mediaType?: string; mediaId?: string; _id?: string }) => {
@@ -395,35 +486,36 @@ export default function MediaDownloads() {
           </div>
         )}
 
-        {!loading && activeDownloads.length > 0 && (
+        {!loading && activeGroups.length > 0 && (
           <section>
             <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-              {t('downloads.active')} ({activeDownloads.length})
+              {t('downloads.active')} ({activeGroups.length})
             </h2>
             <div className="space-y-3">
-              {activeDownloads.map((dl, index) => (
+              {activeGroups.map((group) => (
                 <DownloadProgress
-                  key={getUniqueKey(dl, index)}
-                  title={dl.title}
-                  poster={dl.poster}
-                  status={dl.status}
-                  progress={dl.progress}
-                  torrentState={dl.torrentState}
-                  torrentStateLabel={dl.torrentStateLabel}
-                  mediaId={dl.mediaId}
-                  tmdbId={dl.tmdbId}
-                  mediaType={dl.mediaType}
-                  posterFallback={dl.mediaId && dl.mediaType ? `${mediaApiBase}/poster/${dl.mediaType}/${dl.mediaId}` : undefined}
-                  onDelete={() => handleDeleteDownload(dl._id, dl)}
-                  onRetry={dl.status === 'error' ? () => handleRetryDownload(dl) : undefined}
+                  key={group.key}
+                  title={group.title}
+                  poster={group.poster}
+                  status={group.status}
+                  progress={group.progress}
+                  torrentState={group.torrentState}
+                  mediaId={group.mediaId}
+                  tmdbId={group.tmdbId}
+                  mediaType={group.mediaType}
+                  itemCount={group.items.length}
+                  seasons={group.seasons}
+                  posterFallback={group.mediaId && group.mediaType ? `${mediaApiBase}/poster/${group.mediaType}/${group.mediaId}` : undefined}
+                  onDelete={() => handleDeleteGroup(group)}
+                  onRetry={group.status === 'error' ? () => handleRetryDownload(group.items[0]) : undefined}
                 />
               ))}
             </div>
           </section>
         )}
 
-        {!loading && downloads.length === 0 && (
+        {!loading && activeGroups.length === 0 && downloads.length === 0 && (
           <div className="text-center py-20">
             <Download className="w-16 h-16 text-gray-700 mx-auto mb-4" />
             <p className="text-gray-400 text-lg mb-1">{t('downloads.noActive')}</p>
@@ -459,7 +551,10 @@ export default function MediaDownloads() {
                     <div className="flex-1 min-w-0">
                       <h4 className="text-sm font-semibold text-white truncate" title={group.title}>{group.title}</h4>
                       <p className="text-xs text-gray-400 mt-1">
-                        {group.items.length} {group.items.length !== 1 ? t('media.seasons') : t('media.season')} — {t('downloadStatus.completed')}
+                        {group.mediaType === 'series'
+                          ? `${group.items.length} ${group.items.length !== 1 ? t('media.seasons') : t('media.season')}`
+                          : `${sizeGB} GB`
+                        } — {t('downloadStatus.completed')}
                       </p>
                       <div className="flex flex-wrap gap-1.5 mt-2">
                         {group.items.map((dl, itemIndex) => (
