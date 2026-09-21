@@ -1,5 +1,9 @@
 # Media Server
 
+## ℹ️ Sobre este repositório
+
+Configurações de media server (Jellyfin/Plex etc.).
+
 Servidor de mídia self-hosted com catálogo de filmes e séries, streaming,
 downloads via torrent, integração com *arrs (Radarr/Sonarr/Prowlarr/Jackett) e
 player web.
