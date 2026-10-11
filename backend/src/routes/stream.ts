@@ -11,18 +11,17 @@ import { Series } from '../models/Series';
 import type { AuthRequest } from '../types';
 import { getLocalStreamBaseURL } from '../utils/network';
 import { isSpamFileName } from '../utils/constants';
+import { PlaybackRegistry } from '../services/PlaybackRegistry';
+import { applyStreamCorsHeaders } from '../utils/corsPolicy';
 
 const COMPONENT = 'StreamRoute';
 const router = Router();
 
 // CORS headers específicos para streaming de vídeo (Range requests)
 // DEVE estar ANTES do authenticateToken para permitir preflight requests
-router.use((_req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers', 'Range, Accept, Authorization, Content-Type');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
-  if (_req.method === 'OPTIONS') {
+router.use((req, res, next) => {
+  if (!applyStreamCorsHeaders(req, res)) return res.sendStatus(403);
+  if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
   next();
@@ -48,7 +47,7 @@ router.use((req: any, res: any, next: any) => {
   try {
     const jwt = require('jsonwebtoken');
     const JWT_SECRET = process.env.JWT_SECRET;
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     req.user = decoded;
     next();
   } catch {
@@ -56,10 +55,29 @@ router.use((req: any, res: any, next: any) => {
   }
 });
 
-const MEDIA_ROOTS = ['/media/servidor/Backup', '/media/movies', '/media/series', '/downloads'];
+const MEDIA_ROOTS = ['/media/servidor/Backup/media', '/media/movies', '/media/series', '/downloads', '/media/transcode'];
 
 function resolveMediaPath(relativePath: string): string | null {
   const decoded = decodeURIComponent(relativePath);
+
+  // Suporte legado: DB antigo armazenava path absoluto (/media/movies/...).
+  // Se o decoded já é absoluto e existe, retornar direto (evita duplicação de prefixo).
+  if (decoded.startsWith('/')) {
+    const absCandidate = path.resolve(decoded);
+    // Valida que está dentro de MEDIA_ROOTS para segurança
+    const insideRoot = MEDIA_ROOTS.some((root) => absCandidate.startsWith(path.resolve(root)));
+    if (insideRoot && fs.existsSync(absCandidate)) {
+      try {
+        const stat = fs.statSync(absCandidate);
+        if (stat.isFile() && isSpamFileName(path.basename(absCandidate), stat.size)) {
+          logger.warn(COMPONENT, `Blocked spam file path (absolute): ${absCandidate}`);
+        } else {
+          return absCandidate;
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
   const safePath = decoded.replace(/\.\.\//g, '').replace(/\.\./g, '').replace(/^\/+/, '');
 
   for (const root of MEDIA_ROOTS) {
@@ -116,7 +134,11 @@ function findVideoFileByTitle(title: string, year?: number): string | null {
                 const isPropaganda = !isRealEpisode && ['bludv', 'sample', 'trailer', 'propaganda', 'preview', 'promo', 'ad-', 'ad_'].some((kw) => name.includes(kw));
                 let tooSmall = false;
                 try {
-                  tooSmall = fs.statSync(fullPath).size < 100 * 1024 * 1024;
+                  const size = fs.statSync(fullPath).size;
+                  // Em /downloads (parcial/sequencial) permite 30MB para play antecipado; finalizados exigem 100MB para filtrar propaganda
+                  const isPartialRoot = dirPath.startsWith('/downloads');
+                  const minSize = isPartialRoot ? 30 * 1024 * 1024 : 100 * 1024 * 1024;
+                  tooSmall = size < minSize;
                 } catch {
                   tooSmall = true;
                 }
@@ -141,6 +163,8 @@ function findVideoFileByTitle(title: string, year?: number): string | null {
 
 function firstRealVideoInDir(dir: string): string | null {
   const all: string[] = [];
+  const isPartialRoot = dir.startsWith('/downloads');
+  const minSize = isPartialRoot ? 30 * 1024 * 1024 : 100 * 1024 * 1024;
   function walk(d: string, depth = 0) {
     if (depth > 6) return;
     try {
@@ -153,7 +177,7 @@ function firstRealVideoInDir(dir: string): string | null {
           const isPropaganda = !isRealEpisode && ['bludv', 'sample', 'trailer', 'propaganda', 'preview', 'promo', 'ad-', 'ad_'].some((kw) => name.includes(kw));
           let tooSmall = false;
           try {
-            tooSmall = fs.statSync(full).size < 100 * 1024 * 1024;
+            tooSmall = fs.statSync(full).size < minSize;
           } catch {
             tooSmall = true;
           }
@@ -167,6 +191,20 @@ function firstRealVideoInDir(dir: string): string | null {
   walk(dir);
   return all.length > 0 ? all[0] : null;
 }
+
+/**
+ * POST /api/stream/heartbeat
+ * O frontend pinga enquanto o player está aberto (a cada 30s). Mantém a
+ * sessão ativa e bloqueia a troca física do arquivo em exibição.
+ * Body: { path: "<caminho relativo ou absoluto em exibição>" }
+ */
+router.post('/heartbeat', (req: AuthRequest, res: Response) => {
+  const p = String((req.body as any)?.path || '');
+  if (!p) return res.json({ ok: false });
+  const resolved = resolveMediaPath(p);
+  if (resolved) PlaybackRegistry.touch(resolved);
+  res.json({ ok: true });
+});
 
 router.get('/duration/*', async (req: AuthRequest, res: Response) => {
   try {
@@ -187,7 +225,7 @@ router.get('/duration/*', async (req: AuthRequest, res: Response) => {
     }
 
     const { execFile } = require('child_process');
-    const ffprobePath = '/usr/lib/jellyfin-ffmpeg/ffprobe';
+    const ffprobePath = 'ffprobe';
     execFile(ffprobePath, [
       '-v', 'quiet', '-print_format', 'json', '-show_format',
       filePath
@@ -369,10 +407,24 @@ router.get('/*', async (req: AuthRequest, res: Response) => {
     const quality = req.query.quality === '720p' ? '720p' : '1080p';
     const range = req.headers.range;
     const seekStart = req.query.start ? parseFloat(String(req.query.start)) : undefined;
+    const allowDirect = req.query.direct === '1' || req.query.allowPartial === '1';
 
-    logger.info(COMPONENT, `Stream requested: ${fileSubPath} (transcode: ${forceTranscode}, quality: ${quality}${seekStart ? `, seek: ${seekStart}s` : ''})`);
+    // REGRA DE OURO: registra sessão ativa — a troca "convertido → original"
+    // fica bloqueada enquanto este arquivo estiver sendo assistido.
+    PlaybackRegistry.touch(filePath);
+    res.on('close', () => {
+      // Stream encerrou (fim/stop/skip). O grace de 5min começa a contar daqui.
+      PlaybackRegistry.release(filePath);
+    });
 
-    StreamingService.streamVideo(filePath, range, res, forceTranscode, quality, seekStart);
+    logger.info(COMPONENT, `Stream requested: ${fileSubPath} (transcode: ${forceTranscode}, quality: ${quality}, direct: ${allowDirect}${seekStart ? `, seek: ${seekStart}s` : ''})`);
+
+    await StreamingService.streamVideo(filePath, range, res, forceTranscode, quality, seekStart, allowDirect as any)
+      .catch((err: any) => {
+        // Evita unhandled rejection (ex.: ENOENT entre existsSync e statSync)
+        logger.warn(COMPONENT, 'streamVideo falhou', { error: err.message });
+        if (!res.headersSent) res.status(404).json({ error: 'Arquivo indisponível' });
+      });
   } catch (err: any) {
     logger.error(COMPONENT, 'Stream error', { error: err.message });
     res.status(500).json({ error: 'Erro ao processar stream' });

@@ -4,10 +4,11 @@ import { Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import type { AuthRequest, UserPayload } from '../types';
 
-const JWT_SECRET: string = process.env.JWT_SECRET || (() => {
-  console.error('[Auth] FATAL: JWT_SECRET environment variable is required');
+const JWT_SECRET = (process.env.JWT_SECRET || '').trim();
+if (Buffer.byteLength(JWT_SECRET, 'utf8') < 32) {
+  console.error('[Auth] FATAL: configure JWT_SECRET com pelo menos 32 bytes aleatórios');
   process.exit(1);
-})();
+}
 
 import { rateLimit } from 'express-rate-limit';
 import { LoginAttempt } from '../models/LoginAttempt';
@@ -35,7 +36,7 @@ export function authenticateToken(req: AuthRequest, res: Response, next: NextFun
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     req.user = decoded as UserPayload;
     next();
   } catch {
@@ -53,5 +54,5 @@ export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction
 
 export function generateToken(payload: UserPayload): string {
   const expiresIn = (process.env.JWT_EXPIRES_IN || '7d') as string;
-  return jwt.sign(payload, JWT_SECRET, { expiresIn } as jwt.SignOptions);
+  return jwt.sign(payload, JWT_SECRET, { expiresIn, algorithm: 'HS256' } as jwt.SignOptions);
 }
