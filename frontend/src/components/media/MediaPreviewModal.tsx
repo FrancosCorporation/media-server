@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import { X, Star, Calendar, Film, Tv, Play, ChevronDown, ChevronRight, Loader2, Download, CheckCircle, AlertCircle, RotateCcw } from 'lucide-react';
 import { cn, formatTitleWithYear } from '@/lib/utils';
-import { mediaApi, mediaApiBase } from '@/services/media/api';
+import { authenticatedMediaUrl, mediaApi, mediaApiBase } from '@/services/media/api';
 import { useI18n } from '@/i18n';
 import PosterImage from './PosterImage';
 
@@ -98,7 +98,7 @@ export default function MediaPreviewModal({ item, isMovie, onClose, onPlay, onAd
         {backdropSrc && (
           <div className="relative h-40 sm:h-52 shrink-0 overflow-hidden">
             <img
-              src={backdropSrc}
+              src={authenticatedMediaUrl(backdropSrc)}
               alt=""
               className="w-full h-full object-cover"
               onError={(e) => { e.currentTarget.style.display = 'none'; }}

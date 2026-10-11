@@ -25,7 +25,8 @@ const ipRateLimit = rateLimit({
 export function authenticateToken(req: AuthRequest, res: Response, next: NextFunction): void {
   const authHeader = req.headers['authorization'];
   let token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  // Complemento: permite token via ?token= (usado por navigator.sendBeacon que não suporta headers).
+  // Fallback para clientes de mídia do navegador (<img>, video[poster]) e sendBeacon,
+  // que não permitem enviar o header Authorization. Acesso e logs devem redigir a query.
   if (!token && req.query.token) {
     token = String(req.query.token);
   }

@@ -2,7 +2,7 @@
 // Leia /home/servidor/Git/site_corp/PROJECT_CONTEXT.md antes de modificar este arquivo
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { cn } from '@/lib/utils';
-import { mediaApiBase } from '@/services/media/api';
+import { authenticatedMediaUrl, mediaApiBase } from '@/services/media/api';
 import { Film, Loader2 } from 'lucide-react';
 
 interface PosterImageProps {
@@ -117,7 +117,7 @@ export default function PosterImage({ src, fallbackSrc, mediaId, tmdbId, mediaTy
       <img
         key={currentSrc}
         ref={imgRef}
-        src={currentSrc}
+        src={authenticatedMediaUrl(currentSrc)}
         alt={alt}
         className={cn(
           'w-full h-full object-cover transition-opacity duration-300',

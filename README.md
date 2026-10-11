@@ -89,6 +89,31 @@ frontend/src/
 └── services/     # clientes HTTP/websocket
 ```
 
+## Segurança e configuração
+
+Este backend autentica as rotas de imagem e de capa que consultam TMDB, OMDb,
+Radarr e Sonarr. O frontend adiciona o JWT às URLs de imagem porque `<img>` e
+`video poster` não aceitam o header `Authorization`; não compartilhe essas
+URLs. O logger HTTP remove a query string, e o proxy reverso também deve omitir
+parâmetros de query dos access logs.
+
+Configure origens exatas em `FRONTEND_URLS` e gere `JWT_SECRET` com pelo menos
+32 bytes aleatórios. Na primeira inicialização, informe `ADMIN_USERNAME`,
+`ADMIN_EMAIL` e `ADMIN_PASSWORD` (mínimo de 16 bytes). `MONGO_URI` é obrigatório.
+As chaves de Radarr, Sonarr, Prowlarr, Jackett, qBittorrent, Jellyfin, TMDB,
+OMDb e Google OAuth devem vir do ambiente ou das configurações administrativas;
+elas não têm valores padrão no código. Veja [.env.example](.env.example) para a
+lista completa. Guarde `.env` fora do Git e restrinja o acesso ao banco de
+configurações, que mantém credenciais de integrações.
+
+As capas autenticadas usam cache privado no navegador. O cache em disco do
+TMDB tem TTL, limite de tamanho e reserva mínima de espaço; ajuste esses limites
+com `TMDB_IMAGE_CACHE_*` conforme o volume disponível.
+
+Este snapshot não inclui `package.json`, lockfile, `tsconfig.json` ou manifesto
+de build. Por isso, CI e compilação precisam aguardar a restauração dos
+manifestos oficiais de produção; não invente dependências a partir do código.
+
 ## Licença
 
 MIT — veja [LICENSE](LICENSE).

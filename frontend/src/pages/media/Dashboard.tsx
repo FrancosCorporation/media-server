@@ -5,7 +5,7 @@ import MediaLayout from '@/components/media/MediaLayout';
 import MediaCard from '@/components/media/MediaCard';
 import MediaPreviewModal from '@/components/media/MediaPreviewModal';
 import MediaPlayerOverlay from '@/components/media/MediaPlayerOverlay';
-import { mediaApi } from '@/services/media/api';
+import { authenticatedMediaUrl, mediaApi } from '@/services/media/api';
 import { getCached, setCache, invalidateCache } from '@/services/media/cache';
 import {
   Film, Tv, Download, Library, TrendingUp, ArrowRight,
@@ -123,7 +123,7 @@ export default function MediaDashboard() {
         {featured ? (
           <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 min-h-[280px] md:min-h-[340px] flex items-end">
             {featured.backdrop && (
-              <img src={featured.backdrop} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30" />
+              <img src={authenticatedMediaUrl(featured.backdrop)} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30" />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/60 to-transparent" />
             <div className="relative z-10 p-6 md:p-10 w-full">

@@ -11,6 +11,7 @@ import DevicePicker from './DevicePicker';
 import { cn } from '@/lib/utils';
 import { useMediaToast } from './MediaToast';
 import { useI18n } from '@/i18n';
+import { authenticatedMediaUrl } from '@/services/media/api';
 
 const MEDIA_API = import.meta.env.VITE_MEDIA_API_URL || '/dolfimflix/api';
 
@@ -926,7 +927,7 @@ document.removeEventListener('fullscreenchange', onFullscreenChange);
       {/* Vídeo */}
       <video
         ref={videoRef}
-        poster={poster}
+        poster={authenticatedMediaUrl(poster)}
         className="w-full h-full object-contain"
         preload="auto"
         playsInline

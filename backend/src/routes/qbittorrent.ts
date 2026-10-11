@@ -12,6 +12,15 @@ const COMPONENT = 'QBittorrentRoute';
 const router = Router();
 router.use(authenticateToken);
 
+function safeEndpointUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return 'endereço configurado';
+  }
+}
+
 /**
  * GET /api/qbittorrent/status
  * Retorna status da conexão com qBittorrent (versão, conectado, último erro)
@@ -26,11 +35,14 @@ router.get('/status', async (_req: Request, res: Response) => {
 
     res.json({
       ...health,
-      configuredUrl,
+      configuredUrl: safeEndpointUrl(configuredUrl),
       checkTimestamp: new Date().toISOString(),
     });
   } catch (err) {
-    logger.error(COMPONENT, 'Status check error', { error: err instanceof Error ? err.message : String(err) });
+    const code = err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: unknown }).code || 'STATUS_ERROR')
+      : 'STATUS_ERROR';
+    logger.error(COMPONENT, 'Status check error', { errorCode: code });
     res.status(500).json({ connected: false, message: 'Erro interno ao verificar status' });
   }
 });
@@ -44,13 +56,22 @@ router.post('/test', requireAdmin, async (_req: AuthRequest, res: Response) => {
   try {
     const settings = await Settings.findOne();
     const url = settings?.qbittorrentUrl || process.env.QBITTORRENT_URL || 'http://qbittorrent:8082';
-    const username = settings?.qbittorrentUsername || process.env.QBITTORRENT_USERNAME || 'dolfim';
-    const password = settings?.qbittorrentPassword || process.env.QBITTORRENT_PASSWORD || '123Rd!';
+    const username = settings?.qbittorrentUsername || process.env.QBITTORRENT_USERNAME || '';
+    const password = settings?.qbittorrentPassword || process.env.QBITTORRENT_PASSWORD || '';
+    const displayUrl = safeEndpointUrl(url);
+
+    if (!username || !password) {
+      return res.status(503).json({
+        success: false,
+        step: 'configuration',
+        message: 'Configure usuário e senha do qBittorrent antes de testar a conexão.',
+        url: displayUrl,
+      });
+    }
 
     logger.info(COMPONENT, 'Testando conexão com qBittorrent', {
-      url,
-      username,
-      passwordSet: !!password,
+      url: displayUrl,
+      credentialsConfigured: true,
     });
 
     // Testa 1: reachabilidade do host
@@ -64,17 +85,19 @@ router.post('/test', requireAdmin, async (_req: AuthRequest, res: Response) => {
         return res.json({
           success: false,
           step: 'reachability',
-          message: `qBittorrent respondeu com HTTP ${pingRes.status} em ${url}`,
-          url,
+          message: `qBittorrent respondeu com HTTP ${pingRes.status} em ${displayUrl}`,
+          url: displayUrl,
         });
       }
     } catch (err: any) {
-      const code = err.code || (err.message || '').includes('timeout') ? 'TIMEOUT' : 'UNKNOWN';
+      const code = typeof err.code === 'string'
+        ? err.code
+        : (err.message || '').toLowerCase().includes('timeout') ? 'TIMEOUT' : 'UNKNOWN';
       return res.json({
         success: false,
         step: 'reachability',
-        message: `Não foi possível conectar em ${url}: ${code}`,
-        url,
+        message: `Não foi possível conectar em ${displayUrl}: ${code}`,
+        url: displayUrl,
       });
     }
 
@@ -85,8 +108,7 @@ router.post('/test', requireAdmin, async (_req: AuthRequest, res: Response) => {
         success: false,
         step: 'login',
         message: 'Falha na autenticação. Verifique usuário e senha no qBittorrent.',
-        url,
-        username,
+        url: displayUrl,
       });
     }
 
@@ -97,11 +119,14 @@ router.post('/test', requireAdmin, async (_req: AuthRequest, res: Response) => {
       success: true,
       step: 'complete',
       message: `Conectado! ${torrents.length} torrent(s) encontrados.`,
-      url,
+      url: displayUrl,
       torrentCount: torrents.length,
     });
   } catch (err) {
-    logger.error(COMPONENT, 'Test error', { error: err instanceof Error ? err.message : String(err) });
+    const code = err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: unknown }).code || 'TEST_ERROR')
+      : 'TEST_ERROR';
+    logger.error(COMPONENT, 'Test error', { errorCode: code });
     res.status(500).json({
       success: false,
       step: 'error',

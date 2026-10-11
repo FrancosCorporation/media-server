@@ -7,21 +7,28 @@ import { logger } from '../utils/logger';
 
 const COMPONENT = 'Seed';
 
+function errorCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' || typeof code === 'number') return String(code);
+  }
+  return 'SEED_ERROR';
+}
+
 export async function seedAdmin(): Promise<void> {
   try {
     const count = await User.countDocuments();
     if (count === 0) {
-      const username = process.env.ADMIN_USERNAME || 'admin';
-      const password = process.env.ADMIN_PASSWORD || 'admin123';
+      const username = process.env.ADMIN_USERNAME?.trim() || '';
+      const email = process.env.ADMIN_EMAIL?.trim() || '';
+      const password = process.env.ADMIN_PASSWORD || '';
+      if (!username || !email || Buffer.byteLength(password, 'utf8') < 16) {
+        throw new Error('Configure ADMIN_USERNAME, ADMIN_EMAIL e uma ADMIN_PASSWORD com pelo menos 16 bytes antes do primeiro início');
+      }
+
       const hashed = await bcrypt.hash(password, 12);
-      await User.create({
-        username,
-        email: process.env.ADMIN_EMAIL || 'admin@dolfimflix.local',
-        password: hashed,
-        role: 'admin',
-      });
-      logger.info(COMPONENT, `Default admin user created (${username} / ${password})`);
-      logger.warn(COMPONENT, 'CHANGE THE DEFAULT ADMIN PASSWORD IMMEDIATELY');
+      await User.create({ username, email, password: hashed, role: 'admin' });
+      logger.info(COMPONENT, 'Initial administrator created from configured credentials');
     }
 
     const settingsCount = await Settings.countDocuments();
@@ -33,9 +40,11 @@ export async function seedAdmin(): Promise<void> {
         sonarrApiKey: process.env.SONARR_API_KEY || '',
         prowlarrUrl: process.env.PROWLARR_URL || 'http://prowlarr:9696',
         prowlarrApiKey: process.env.PROWLARR_API_KEY || '',
+        jackettUrl: process.env.JACKETT_URL || 'http://jackett:9117',
+        jackettApiKey: process.env.JACKETT_API_KEY || '',
         qbittorrentUrl: process.env.QBITTORRENT_URL || 'http://qbittorrent:8082',
-        qbittorrentUsername: process.env.QBITTORRENT_USERNAME || 'dolfim',
-        qbittorrentPassword: process.env.QBITTORRENT_PASSWORD || '123Rd!',
+        qbittorrentUsername: process.env.QBITTORRENT_USERNAME || '',
+        qbittorrentPassword: process.env.QBITTORRENT_PASSWORD || '',
         jellyfinUrl: process.env.JELLYFIN_URL || 'http://jellyfin:8096',
         jellyfinApiKey: process.env.JELLYFIN_API_KEY || '',
         defaultQuality: process.env.DEFAULT_QUALITY || '1080p',
@@ -45,9 +54,8 @@ export async function seedAdmin(): Promise<void> {
       });
       logger.info(COMPONENT, 'Default settings created from environment');
     }
-  } catch (err) {
-    logger.error(COMPONENT, 'Seed error', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  } catch (error) {
+    logger.error(COMPONENT, 'Failed to initialize application records', { errorCode: errorCode(error) });
+    throw new Error('Falha ao inicializar dados da aplicação; confira as configurações obrigatórias');
   }
 }

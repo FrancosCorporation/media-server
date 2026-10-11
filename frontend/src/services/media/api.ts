@@ -17,11 +17,49 @@ export function getValidToken(): string | null {
   const token = localStorage.getItem('media_token');
   if (!token) return null;
   if (!isValidJWT(token)) {
-    console.warn('[mediaApi] Token inválido detectado (formato JWT incorreto), removendo:', token.substring(0, 50) + '...');
+    console.warn('[mediaApi] Token inválido detectado; removendo a sessão local.');
     localStorage.removeItem('media_token');
     return null;
   }
   return token;
+}
+
+/**
+ * Acrescenta o JWT às URLs de imagem servidas pela API de mídia.
+ * O navegador não permite configurar Authorization em <img> ou video[poster].
+ */
+export function authenticatedMediaUrl(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  const token = getValidToken();
+  if (!token || typeof window === 'undefined') return url;
+
+  try {
+    const apiRoot = new URL(MEDIA_API, window.location.origin);
+    const target = new URL(url, window.location.origin);
+    const rootRelative = url.startsWith('/') && !url.startsWith('//');
+    if (!rootRelative && target.origin !== apiRoot.origin) return url;
+
+    const basePath = apiRoot.pathname.replace(/\/+$/, '');
+    let apiPath = '';
+    if (basePath && target.pathname.startsWith(`${basePath}/`)) {
+      apiPath = target.pathname.slice(basePath.length);
+    } else if (target.pathname.startsWith('/api/')) {
+      apiPath = target.pathname.slice('/api'.length);
+    } else {
+      return url;
+    }
+
+    if (!/^\/(?:tmdb-image|omdb-image|radarr-cover|sonarr-cover|covers|poster)(?:\/|$)/.test(apiPath)) {
+      return url;
+    }
+
+    target.searchParams.set('token', token);
+    return /^[a-z][a-z\d+.-]*:/i.test(url)
+      ? target.toString()
+      : `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return url;
+  }
 }
 
 /** Base da API de mídia — usada para montar URLs (ex: fallback de capas). */

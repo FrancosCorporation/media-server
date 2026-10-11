@@ -67,7 +67,10 @@ async function omdbGet(params: Record<string, string>): Promise<OMDBMovieResult 
     }
     return data;
   } catch (err: any) {
-    logger.warn(COMPONENT, `OMDB request error: ${err.message}`);
+    logger.warn(COMPONENT, 'OMDB request failed', {
+      errorCode: typeof err.code === 'string' ? err.code : 'UPSTREAM_ERROR',
+      status: Number.isInteger(err.response?.status) ? err.response.status : undefined,
+    });
     return null;
   }
 }

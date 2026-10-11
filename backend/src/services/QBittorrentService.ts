@@ -7,6 +7,19 @@ import { normalizeTitleForMatch, extractSeasonNumber } from '../utils/mediaOrgan
 
 const COMPONENT = 'QBittorrentService';
 
+function safeEndpointUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return 'qBittorrent';
+  }
+}
+
+function errorCode(error: any): string {
+  return typeof error?.code === 'string' ? error.code : 'UPSTREAM_ERROR';
+}
+
 let cookie = '';
 let lastLoginAttempt = 0;
 let loginError = '';
@@ -17,8 +30,8 @@ async function getConfig() {
   const s = await Settings.findOne();
   return {
     url: s?.qbittorrentUrl || process.env.QBITTORRENT_URL || 'http://qbittorrent:8082',
-    username: s?.qbittorrentUsername || process.env.QBITTORRENT_USERNAME || 'dolfim',
-    password: s?.qbittorrentPassword || process.env.QBITTORRENT_PASSWORD || '123Rd!',
+    username: s?.qbittorrentUsername || process.env.QBITTORRENT_USERNAME || '',
+    password: s?.qbittorrentPassword || process.env.QBITTORRENT_PASSWORD || '',
   };
 }
 
@@ -79,7 +92,7 @@ async function doLogin(): Promise<boolean> {
       logger.error(COMPONENT, 'Login failed: credenciais inválidas', {
         status: res.status,
         body: body.slice(0, 50),
-        url: config.url,
+        url: safeEndpointUrl(config.url),
       });
       return false;
     }
@@ -92,7 +105,7 @@ async function doLogin(): Promise<boolean> {
       isConnected = true;
       logger.info(COMPONENT, 'qBittorrent autenticado', {
         status: res.status,
-        url: config.url,
+        url: safeEndpointUrl(config.url),
       });
       return true;
     }
@@ -135,14 +148,18 @@ async function doLogin(): Promise<boolean> {
     return false;
   } catch (err: any) {
     if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ECONNABORTED') {
-      loginError = `qBittorrent inacessível em ${config.url} (${err.code})`;
-      logger.error(COMPONENT, loginError);
+      loginError = `qBittorrent inacessível (${err.code})`;
+      logger.error(COMPONENT, 'qBittorrent unreachable', { errorCode: err.code });
     } else if (err.response?.status === 403) {
       loginError = 'Acesso negado — verifique as credenciais no qBittorrent';
       logger.error(COMPONENT, loginError);
     } else {
-      loginError = `Erro de conexão: ${err.message}`;
-      logger.error(COMPONENT, 'Login error', { error: err.message, url: config.url });
+      loginError = 'Erro de conexão com qBittorrent';
+      logger.error(COMPONENT, 'Login error', {
+        errorCode: errorCode(err),
+        status: Number.isInteger(err.response?.status) ? err.response.status : undefined,
+        url: safeEndpointUrl(config.url),
+      });
     }
     isConnected = false;
     cookie = '';
@@ -173,7 +190,7 @@ export const QBittorrentService = {
     } catch (err: any) {
       return {
         connected: false,
-        message: err.message || 'Erro ao verificar saúde',
+        message: 'Erro ao verificar saúde do qBittorrent',
       };
     }
   },
@@ -193,7 +210,7 @@ export const QBittorrentService = {
       isConnected = true;
       return data;
     } catch (err: any) {
-      logger.warn(COMPONENT, 'getInfo failed', { error: err.message });
+      logger.warn(COMPONENT, 'getInfo failed', { errorCode: errorCode(err) });
       cookie = '';
       isConnected = false;
       return null;
@@ -223,7 +240,7 @@ export const QBittorrentService = {
         state: t.state,
       }));
     } catch (err: any) {
-      logger.warn(COMPONENT, 'getTorrents failed', { error: err.message });
+      logger.warn(COMPONENT, 'getTorrents failed', { errorCode: errorCode(err) });
       cookie = '';
       isConnected = false;
       return [];
@@ -260,7 +277,7 @@ export const QBittorrentService = {
       }
       return null;
     } catch (err: any) {
-      logger.warn(COMPONENT, 'getTorrentByHash failed', { hash, error: err.message });
+      logger.warn(COMPONENT, 'getTorrentByHash failed', { hash, errorCode: errorCode(err) });
       return null;
     }
   },
@@ -287,7 +304,7 @@ export const QBittorrentService = {
       logger.info(COMPONENT, 'Torrent deleted', { hash, deleteFiles });
       return true;
     } catch (err: any) {
-      logger.error(COMPONENT, 'deleteTorrent failed', { hash, error: err.message });
+      logger.error(COMPONENT, 'deleteTorrent failed', { hash, errorCode: errorCode(err) });
       return false;
     }
   },
@@ -325,7 +342,7 @@ export const QBittorrentService = {
       }
       return false;
     } catch (err: any) {
-      logger.warn(COMPONENT, 'hasActiveTorrentForSeason failed', { error: err.message });
+      logger.warn(COMPONENT, 'hasActiveTorrentForSeason failed', { errorCode: errorCode(err) });
       return false;
     }
   },
@@ -437,16 +454,14 @@ export const QBittorrentService = {
           });
           return infohash;
         }
-        logger.error(COMPONENT, 'Torrent NOT confirmed in qBittorrent after add — refusing to create phantom download', { hash: infohash, magnet: magnet.substring(0, 80) });
+        logger.error(COMPONENT, 'Torrent NOT confirmed in qBittorrent after add — refusing to create phantom download', { hash: infohash });
         return null;
       }
       return null;
     } catch (err: any) {
       logger.error(COMPONENT, 'Failed to add magnet', {
-        error: err.message,
-        response: err.response?.data,
+        errorCode: errorCode(err),
         status: err.response?.status,
-        magnet: magnet.substring(0, 60) + '...',
       });
       return null;
     }
@@ -480,7 +495,7 @@ export const QBittorrentService = {
       logger.info(COMPONENT, 'qBittorrent preferences updated', { maxActiveTorrents, maxActiveDownloads });
       return true;
     } catch (err: any) {
-      logger.error(COMPONENT, 'setPreferences failed', { error: err.message });
+      logger.error(COMPONENT, 'setPreferences failed', { errorCode: errorCode(err) });
       return false;
     }
   },
@@ -529,7 +544,7 @@ export const QBittorrentService = {
       }
       return deleted;
     } catch (err: any) {
-      logger.error(COMPONENT, 'cleanupZeroSeedTorrents failed', { error: err.message });
+      logger.error(COMPONENT, 'cleanupZeroSeedTorrents failed', { errorCode: errorCode(err) });
       return 0;
     }
   },
@@ -561,7 +576,7 @@ export const QBittorrentService = {
         });
         addedHashes.push(infohash);
       } catch (err: any) {
-        logger.warn(COMPONENT, `Failed to add evaluation magnet: ${err.message}`);
+        logger.warn(COMPONENT, 'Failed to add evaluation magnet', { errorCode: errorCode(err) });
       }
     }
 
@@ -635,7 +650,7 @@ export const QBittorrentService = {
       logger.info(COMPONENT, `Deleted ${hashes.length} evaluation torrents`);
       return hashes.length;
     } catch (err: any) {
-      logger.error(COMPONENT, `deleteTorrents failed: ${err.message}`);
+      logger.error(COMPONENT, 'deleteTorrents failed', { errorCode: errorCode(err) });
       return 0;
     }
   },

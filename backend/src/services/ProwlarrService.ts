@@ -48,7 +48,7 @@ async function getConfig() {
   const s = await Settings.findOne();
   return {
     url: s?.prowlarrUrl || process.env.PROWLARR_URL || 'http://prowlarr:9696',
-    apiKey: s?.prowlarrApiKey || process.env.PROWLARR_API_KEY || 'c18371cbc1304f6f8d5a3ab4928723fb',
+    apiKey: s?.prowlarrApiKey || process.env.PROWLARR_API_KEY || '',
   };
 }
 
@@ -155,7 +155,10 @@ export async function searchProwlarr(
     logger.info(COMPONENT, `Prowlarr: ${results.length} magnets (PT-BR + fallback) for "${query}"`);
     return results;
   } catch (err: any) {
-    logger.warn(COMPONENT, `Prowlarr failed: ${err.message}`);
+    logger.warn(COMPONENT, 'Prowlarr request failed', {
+      errorCode: typeof err.code === 'string' ? err.code : 'UPSTREAM_ERROR',
+      status: Number.isInteger(err.response?.status) ? err.response.status : undefined,
+    });
     return [];
   }
 }

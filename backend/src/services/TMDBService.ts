@@ -41,13 +41,15 @@ async function tmdbGet(endpoint: string, params: Record<string, string> = {}, re
         return null;
       }
       const isLastAttempt = attempt === retries;
+      const errorCode = typeof err.code === 'string' ? err.code : 'UPSTREAM_ERROR';
+      const status = Number.isInteger(err.response?.status) ? err.response.status : undefined;
       if (isLastAttempt) {
-        logger.warn(COMPONENT, `TMDB request failed after ${retries + 1} attempts: ${err.message}`);
+        logger.warn(COMPONENT, `TMDB request failed after ${retries + 1} attempts`, { errorCode, status });
         return null;
       }
       // Exponential backoff: 500ms, 1500ms
       const delay = 500 * Math.pow(3, attempt);
-      logger.warn(COMPONENT, `TMDB request attempt ${attempt + 1} failed, retrying in ${delay}ms: ${err.message}`);
+      logger.warn(COMPONENT, `TMDB request attempt ${attempt + 1} failed; retrying in ${delay}ms`, { errorCode, status });
       await new Promise(r => setTimeout(r, delay));
     }
   }

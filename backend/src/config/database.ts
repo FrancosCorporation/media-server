@@ -7,43 +7,46 @@ const COMPONENT = 'Database';
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 3000;
 
-export async function connectDatabase(): Promise<void> {
-  const uri = process.env.MONGO_URI || `mongodb://${process.env.MONGO_INITDB_ROOT_USERNAME || 'media_admin'}:${process.env.MONGO_INITDB_ROOT_PASSWORD || 'changeme'}@media-mongodb:27017/${process.env.MONGO_INITDB_DATABASE || 'media'}?authSource=admin`;
+function errorCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' || typeof code === 'number') return String(code);
+  }
+  return 'DATABASE_ERROR';
+}
 
-  let lastError: Error | null = null;
+export async function connectDatabase(): Promise<void> {
+  const uri = process.env.MONGO_URI?.trim();
+  if (!uri) throw new Error('MONGO_URI é obrigatório para conectar ao MongoDB');
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       await mongoose.connect(uri);
       logger.info(COMPONENT, `MongoDB connected (attempt ${attempt})`);
 
-      mongoose.connection.on('error', (err) => {
-        logger.error(COMPONENT, 'MongoDB runtime error', { error: err.message });
+      mongoose.connection.on('error', (error) => {
+        logger.error(COMPONENT, 'MongoDB runtime error', { errorCode: errorCode(error) });
       });
-
       mongoose.connection.on('disconnected', () => {
         logger.warn(COMPONENT, 'MongoDB disconnected');
       });
 
-      // Create indexes for recommendations performance
       await createIndexes();
-
       return;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
+    } catch (error) {
+      const code = errorCode(error);
       if (attempt < MAX_RETRIES) {
-        logger.warn(COMPONENT, `Connection attempt ${attempt}/${MAX_RETRIES} failed, retrying in ${RETRY_DELAY_MS}ms`, {
-          error: lastError.message,
+        logger.warn(COMPONENT, `Connection attempt ${attempt}/${MAX_RETRIES} failed; retrying in ${RETRY_DELAY_MS}ms`, {
+          errorCode: code,
         });
         await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      } else {
+        logger.error(COMPONENT, `Failed to connect after ${MAX_RETRIES} attempts`, { errorCode: code });
       }
     }
   }
 
-  logger.error(COMPONENT, `Failed to connect after ${MAX_RETRIES} attempts`, {
-    error: lastError?.message,
-  });
-  throw lastError || new Error('MongoDB connection failed');
+  throw new Error('Não foi possível conectar ao MongoDB; confira MONGO_URI e a disponibilidade do serviço');
 }
 
 async function createIndexes(): Promise<void> {
@@ -52,18 +55,15 @@ async function createIndexes(): Promise<void> {
     const { Series } = await import('../models/Series');
     const { Download } = await import('../models/Download');
 
-    // Recommendations: addedAt for recent, rating for top-rated
     await Movie.collection.createIndex({ addedAt: -1 });
     await Movie.collection.createIndex({ rating: -1 });
     await Series.collection.createIndex({ addedAt: -1 });
     await Series.collection.createIndex({ rating: -1 });
-
-    // Downloads: status for active downloads
     await Download.collection.createIndex({ status: 1 });
 
     logger.info(COMPONENT, 'Indexes created/verified');
-  } catch (err) {
-    logger.warn(COMPONENT, 'Index creation skipped', { error: err instanceof Error ? err.message : String(err) });
+  } catch (error) {
+    logger.warn(COMPONENT, 'Index creation skipped', { errorCode: errorCode(error) });
   }
 }
 

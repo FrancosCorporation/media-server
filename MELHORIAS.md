@@ -1,28 +1,39 @@
 # MELHORIAS — media-server
 
-> **Gerado por análise de código em 2026-10-02** · Stack: Node + Express + TypeScript (backend) + React (frontend) · proxies TMDB/OMDb/Radarr/Sonarr
-> Branch `main` · base `c3313d5` · 1.494 LOC (backend) · 0 testes · sem CI
+> **Gerado em 2026-10-02 · revisado em 2026-10-11** · Stack: Node + Express + TypeScript (backend) + React (frontend) · proxies TMDB/OMDb/Radarr/Sonarr
+> Branch `main` · snapshot de fontes sem manifestos de build; testes e CI indisponíveis nesta árvore
 >
 > **Este arquivo é um plano de execução.** Cada item tem ID, `arquivo:linha`, mudança exata,
 > critério de aceite e comando de verificação.
 >
-> **⚠️ Este serviço é um PROXY para serviços internos que possuem API KEY** (Radarr/Sonarr).
-> Duas rotas públicas constroem URL com a chave a partir do path do cliente.
+> **⚠️ Este serviço é um proxy para serviços internos com chaves de API.** As rotas de imagem agora exigem JWT, validam paths e não registram segredos. Não publique query strings com token nos logs do proxy reverso.
 
 ---
 
 ## 0. Como usar este documento
 
 1. Execute na ordem **P0 → P1 → P2 → P3**, respeitando as ondas da §8.
-2. Ao terminar um item: marque `- [x]`, rode o **Verificação**, comite `fix(<ID>): descrição`.
-3. **Não reescreva o proxy de imagens.** O `cacheFilePath` com **sha1** (`index.ts:181-184`) é
-   **correto** — não há path traversal no disco (verifiquei: o nome do arquivo é hash do path).
+2. Ao terminar um item, marque `- [x]` e faça as verificações estáticas disponíveis; não execute testes sem autorização explícita.
+3. **Não reescreva o proxy de imagens.** `cacheFilePath()` usa SHA-256 para gerar nomes internos
+   e a allowlist de paths protege os destinos de Radarr/Sonarr.
    Não crie um item inexistente aqui.
-4. **`authenticateToken` existe e é usado em 1 de 8 rotas** — verifiquei: só
-   `/api/conversion/:mediaId` (`index.ts:267`) usa; as outras 7 são públicas.
+4. As rotas de imagem e capa e `/api/docs.json` exigem `authenticateToken`; `/health` continua público.
 5. **Idioma:** português.
 
 ---
+
+### Estado atualizado em 2026-10-11
+
+| Item | Estado |
+|---|---|
+| SEC-01/02, SEC-04/05/06, BUG-01/02/03, IMP-01/02 | Implementados no código; faltam confirmação operacional e rotação manual das credenciais já expostas |
+| SEC-03 | Proxies protegidos; frontend envia token nas URLs de imagem e nos redirects locais |
+| SEC-10 | Defaults removidos, senha inicial exigida e logs de credenciais removidos; rotação manual ainda pendente |
+| DEVOPS-02, DOC-01/02 | Exemplo de ambiente, README e SECURITY.md atualizados |
+| TEST-01 | Pendente; não foram adicionados nem executados testes |
+| DEVOPS-01 | Bloqueado pela ausência de `package.json`, lockfile e `tsconfig.json` neste snapshot |
+
+Este quadro substitui os achados de estado da análise inicial abaixo. A credencial de banco deixada em `.env.example` pelo trabalho local não foi incluída; o exemplo versionado neste commit contém apenas campos de segredo vazios.
 
 ## 1. Diagnóstico executivo
 
@@ -33,24 +44,17 @@ mídia e streaming. Backend Express com rotas de proxy para fontes externas.
 
 | Item | Evidência |
 |---|---|
-| `authenticateToken` implementado e aplicado na rota de conversão | `index.ts:57,267` |
+| `authenticateToken` aplicado na conversão, proxies de imagem/capa e docs JSON | `index.ts` |
 | JWT exige `JWT_SECRET` e **falha cedo** sem ele | `middleware/auth.ts:7-10` (`process.exit(1)`) |
-| **Rate limit de login** (100/15 min por IP) | `middleware/auth.ts:15-22` |
-| **Cache de imagem com `sha1(path)`** — sem path traversal no disco | `index.ts:181-184` |
+| **Rate limit de login** (100/15 min por IP) | `middleware/auth.ts` |
+| Cache de imagem com limite, TTL, reserva de disco e nomes SHA-256 | `index.ts` |
 | `fetch` via processo filho com **`maxBuffer` e `timeout`** | `index.ts:204` (`execFile`, 45 s, 5 MB) |
 | `validateStatus: () => true` — não lança para 4xx/5xx (tratamento explícito) | `index.ts:375` |
 | Status do upstream repassado ao cliente | `index.ts:390+` (404 → 404) |
 | Logging estruturado por componente | `logger.info('TMDBImage', ...)` |
 | `Timeout: 15000` no proxy | `index.ts:377` |
 
-**O que está quebrado:**
-
-1. **A API key do Radarr/Sonarr vai para o LOG a cada request** — `target` contém
-   `apikey=${apiKey}` e é passado como objeto de log (`index.ts:365,443`).
-2. **`coverPath` vem do `req.path` do cliente** e é concatenado na URL do serviço interno
-   (`index.ts:358,439`) — caminho em `../` atinge **qualquer endpoint do Radarr/Sonarr** com a chave.
-3. **7 de 8 rotas sem autenticação** — as de proxy são públicas.
-4. **CORS `*`** no proxy de imagem (`index.ts:193`) e nas rotas (confirmado na auditoria inicial).
+**Pendências verificáveis:** rotacionar no Radarr/Sonarr/Prowlarr/Jackett/qBittorrent/MongoDB credenciais que possam ter sido usadas com os antigos valores padrão; validar em ambiente de produção o fluxo de imagem autenticado; restaurar os manifestos oficiais antes de criar CI/build. A rotação exige acesso aos serviços e não pode ser concluída pelo código.
 
 ---
 
@@ -59,6 +63,7 @@ mídia e streaming. Backend Express com rotas de proxy para fontes externas.
 | ID | Título | Sev | Arquivo | Depende de |
 |---|---|---|---|---|
 | SEC-01 | API key do Radarr/Sonarr escrita no **log** | **P0** | `backend/src/index.ts:365,443` | — |
+| SEC-10 | Credenciais padrão embutidas e senha inicial do admin no log | **P0** | `seed.ts`, `database.ts`, `*Service.ts` | rotação manual |
 | SEC-02 | `coverPath` do cliente → URL do serviço interno (proxy arbitrário) | **P0** | `index.ts:358,439` | — |
 | SEC-03 | 7 de 8 rotas sem autenticação | **P1** | `index.ts` (só `:267` com auth) | — |
 | SEC-04 | CORS `*` no proxy de imagem | **P1** | `index.ts:193` | — |
@@ -75,11 +80,28 @@ mídia e streaming. Backend Express com rotas de proxy para fontes externas.
 | DOC-01 | README não documenta que é proxy com chave | **P1** | `README.md` | SEC-01 |
 | DOC-02 | Falta `SECURITY.md` | **P3** | *(ausente)* | SEC-01 |
 
-**Placar: 2 P0 · 6 P1 · 7 P2 · 2 P3 = 17 itens.**
+**Placar: 3 P0 · 6 P1 · 6 P2 · 2 P3 = 17 itens.**
 
 ---
 
 ## 3. Segurança
+
+### SEC-10 · Credenciais padrão embutidas e senha inicial no log · [P0]
+
+- **Arquivos:** `backend/src/config/seed.ts`, `database.ts`,
+  `services/{QBittorrentService,ProwlarrService,JackettService}.ts`,
+  `routes/{settings,qbittorrent}.ts`.
+- **Risco:** o código tinha senha administrativa previsível, credenciais padrão
+  de integrações e registrava a senha do administrador recém-criado. Falhas de
+  TMDB/OMDb/Jackett também podiam registrar a URL com a chave em query.
+- **Mudança implementada:** primeiro admin exige `ADMIN_USERNAME`, `ADMIN_EMAIL`
+  e senha com pelo menos 16 bytes; MongoDB exige `MONGO_URI`; defaults de senha
+  e API keys foram removidos; logs agora registram códigos/status, sem mensagem
+  que possa conter URL autenticada; a API de settings mascara chaves tanto do
+  banco quanto do ambiente.
+- **Aceite do código:** nenhuma credencial padrão ativa nem segredo em log.
+- **Pendente:** rotacionar credenciais já usadas e valores expostos em histórico,
+  banco ou logs antigos. Não reescrever o histórico Git.
 
 ### SEC-01 · API key do Radarr/Sonarr escrita no log · [P0]
 
@@ -413,28 +435,29 @@ e a banda. Como não há auth, é DoS trivial.
 ## 10. Definição de pronto (DoD)
 
 **Segurança**
-- [ ] `SEC-01` — nenhuma URL com `apikey` nos logs; **chaves rotacionadas no Radarr/Sonarr**
-- [ ] `SEC-02` — `../api/v3/system/status` → `400`; só caminho de capa passa
-- [ ] `SEC-03` — todas as rotas `/api/*` (exceto `/health`) exigem token
-- [ ] `SEC-04` — CORS com allowlist; origem de fora sem header
-- [ ] `SEC-05` — `docs.json` exige token (ou só em dev)
-- [ ] `SEC-06` — extensão incompatível com magic bytes → `400`/`nosniff`
+- [x] `SEC-01` — o código não registra URLs/chaves; rotacionar as chaves antigas ainda está pendente
+- [x] `SEC-02` — paths de capa exigem prefixo permitido e rejeitam travessia/query; validação operacional pendente
+- [x] `SEC-03` — proxies, fallback de poster e docs JSON exigem token; frontend envia token nos URLs de imagem
+- [x] `SEC-04` — CORS usa allowlist de origens
+- [x] `SEC-05` — `docs.json` exige token
+- [x] `SEC-06` — imagens raster são validadas por magic bytes e servidas com `nosniff`
+- [x] `SEC-10` — defaults inseguros removidos e credenciais mascaradas nas respostas administrativas
 
 **Funcional**
-- [ ] `BUG-01` — resposta 502 sem `baseUrl`/`apiKey`
-- [ ] `BUG-02` — cache estabiliza no limite
-- [ ] `BUG-03` — sem processo filho órfão
+- [x] `BUG-01` — erros de proxy não devolvem URL, chave ou mensagem bruta
+- [x] `BUG-02` — cache usa limite, TTL e reserva mínima de espaço
+- [x] `BUG-03` — shutdown sinaliza processos de fetch ativos
 
 **Qualidade e infra**
-- [ ] `IMP-01` — 61ª chamada → `429`
-- [ ] `IMP-02` — `/health` reporta estado do upstream
-- [ ] `TEST-01` — `npm test` (proxy, log, auth)
-- [ ] `DEVOPS-01` — CI com barreira anti-`apikey`-em-log
-- [ ] `DEVOPS-02` — `.env.example` com as chaves
+- [x] `IMP-01` — rate limit de 60 chamadas/minuto independente por endpoint de proxy
+- [x] `IMP-02` — `/health` informa banco, Radarr e Sonarr; runtime ainda não verificado
+- [ ] `TEST-01` — pendente; nenhum teste foi adicionado ou executado
+- [ ] `DEVOPS-01` — bloqueado pela ausência de manifestos de dependências/build neste snapshot
+- [x] `DEVOPS-02` — `.env.example` lista as variáveis e deixa segredos vazios
 
 **Documentação**
-- [ ] `DOC-01` — README declara que é proxy e o que é segredo
-- [ ] `DOC-02` — `SECURITY.md` com as 3 invariantes
+- [x] `DOC-01` — README documenta o proxy, auth e configuração
+- [x] `DOC-02` — `SECURITY.md` registra as invariantes
 
 **Validação final:**
 ```bash

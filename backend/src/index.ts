@@ -290,7 +290,7 @@ async function main() {
     logger.warn(COMPONENT, 'FRONTEND_URL(S) não configurada; CORS cross-origin ficará fechado');
   }
 
-  const imageProxyRateLimit = rateLimit({
+  const createImageProxyRateLimit = () => rateLimit({
     windowMs: 60 * 1000,
     max: 60,
     standardHeaders: true,
@@ -451,7 +451,7 @@ async function main() {
     if (!imageType) return null;
     res.set({
       'Content-Type': imageType.contentType,
-      'Cache-Control': 'public, max-age=86400',
+      'Cache-Control': 'private, max-age=86400',
       'X-Content-Type-Options': 'nosniff',
     });
     return res.send(bytes);
@@ -493,7 +493,7 @@ async function main() {
     return data;
   }
 
-  app.get('/api/tmdb-image/*', imageProxyRateLimit, async (req, res) => {
+  app.get('/api/tmdb-image/*', createImageProxyRateLimit(), authenticateToken, async (req, res) => {
     const imagePath = extractSafeImagePath(req.originalUrl, '/api/tmdb-image', 'tmdb');
     if (!imagePath) return res.status(400).json({ error: 'Caminho de imagem inválido' });
 
@@ -724,7 +724,7 @@ async function main() {
   });
 
   // Proxy de imagens do OMDB (m.media-amazon.com) — URLs são time-limited/CDN-protegidas
-  app.get('/api/omdb-image/*', imageProxyRateLimit, async (req, res) => {
+  app.get('/api/omdb-image/*', createImageProxyRateLimit(), authenticateToken, async (req, res) => {
     const imagePath = extractSafeImagePath(req.originalUrl, '/api/omdb-image', 'omdb');
     if (!imagePath) return res.status(400).json({ error: 'Caminho de imagem inválido' });
 
@@ -783,7 +783,7 @@ async function main() {
   app.use('/api/search', searchRoutes);
   app.use('/api/watch-progress', watchProgressRoutes);
   app.use('/api/devices', devicesRoutes);  // Added devices route
-  app.use('/api/poster', imageProxyRateLimit, posterRoutes); // Fallback público de capas
+  app.use('/api/poster', createImageProxyRateLimit(), authenticateToken, posterRoutes);
   app.use('/api/debug', debugRoutes);      // Manutenção/deduplicação/verify-sync (admin)
   app.use('/api/trending', trendingRoutes); // Tendências de streaming (TMDB)
 
@@ -841,7 +841,7 @@ async function main() {
       logger.info(`${serviceName}Cover`, 'Capa carregada', { coverPath, bytes: bytes.length });
       res.set({
         'Content-Type': imageType.contentType,
-        'Cache-Control': 'public, max-age=86400',
+        'Cache-Control': 'private, max-age=86400',
         'X-Content-Type-Options': 'nosniff',
       });
       return res.send(bytes);
@@ -858,7 +858,7 @@ async function main() {
   }
 
   // Proxy de capas do Radarr — serve /MediaCover/ diretamente de http://radarr:7878
-  app.get('/api/radarr-cover/*', imageProxyRateLimit, async (req, res) => {
+  app.get('/api/radarr-cover/*', createImageProxyRateLimit(), authenticateToken, async (req, res) => {
     try {
       const radarrConfig = await RadarrService.getRadarrConfig();
       return await proxyManagedCover(
@@ -873,7 +873,7 @@ async function main() {
   });
 
   // Proxy de capas do Sonarr — serve /MediaCover/ diretamente de http://sonarr:8989
-  app.get('/api/sonarr-cover/*', imageProxyRateLimit, async (req, res) => {
+  app.get('/api/sonarr-cover/*', createImageProxyRateLimit(), authenticateToken, async (req, res) => {
     try {
       const settings = await Settings.findOne().lean();
       const baseUrl = settings?.sonarrUrl || process.env.SONARR_URL || 'http://sonarr:8989';
@@ -888,8 +888,14 @@ async function main() {
   });
 
   // ─── Cached Cover endpoint — serve capas do DB em vez de proxy a cada request ──
-  app.get('/api/covers/:mediaType/:mediaId', imageProxyRateLimit, async (req, res) => {
+  app.get('/api/covers/:mediaType/:mediaId', createImageProxyRateLimit(), authenticateToken, async (req, res) => {
     try {
+      const token = typeof req.query.token === 'string' ? req.query.token : '';
+      const redirectToImageProxy = (url: string) => {
+        if (!token) return res.redirect(302, url);
+        const separator = url.includes('?') ? '&' : '?';
+        return res.redirect(302, `${url}${separator}token=${encodeURIComponent(token)}`);
+      };
       const { mediaType, mediaId } = req.params;
       if (mediaType !== 'movie' && mediaType !== 'series') {
         return res.status(400).json({ error: 'mediaType must be "movie" or "series"' });
@@ -908,13 +914,15 @@ async function main() {
         const prefix = posterUrl.startsWith('/api/') ? '/api/radarr-cover/' : '/media-api/radarr-cover/';
         const safePath = sanitizeImagePath(posterUrl.slice(prefix.length), 'media-cover');
         if (!safePath) return res.status(404).json({ error: 'Capa inválida' });
-        return res.redirect(302, `/media-api/radarr-cover${safePath}`);
+        res.setHeader('Cache-Control', 'private, no-store');
+        return redirectToImageProxy(`/media-api/radarr-cover${safePath}`);
       }
       if (posterUrl.startsWith('/api/sonarr-cover/') || posterUrl.startsWith('/media-api/sonarr-cover/')) {
         const prefix = posterUrl.startsWith('/api/') ? '/api/sonarr-cover/' : '/media-api/sonarr-cover/';
         const safePath = sanitizeImagePath(posterUrl.slice(prefix.length), 'media-cover');
         if (!safePath) return res.status(404).json({ error: 'Capa inválida' });
-        return res.redirect(302, `/media-api/sonarr-cover${safePath}`);
+        res.setHeader('Cache-Control', 'private, no-store');
+        return redirectToImageProxy(`/media-api/sonarr-cover${safePath}`);
       }
 
       let parsed: URL;
@@ -935,11 +943,17 @@ async function main() {
 
       if (parsed.hostname === 'image.tmdb.org' && parsed.pathname.startsWith('/t/p/')) {
         const safePath = sanitizeImagePath(parsed.pathname.slice('/t/p/'.length), 'tmdb');
-        if (safePath) return res.redirect(302, `/media-api/tmdb-image${safePath}`);
+        if (safePath) {
+          res.setHeader('Cache-Control', 'private, no-store');
+          return redirectToImageProxy(`/media-api/tmdb-image${safePath}`);
+        }
       }
       if (parsed.hostname === 'm.media-amazon.com' && parsed.pathname.startsWith('/images/')) {
         const safePath = sanitizeImagePath(parsed.pathname.slice('/images/'.length), 'omdb');
-        if (safePath) return res.redirect(302, `/media-api/omdb-image${safePath}`);
+        if (safePath) {
+          res.setHeader('Cache-Control', 'private, no-store');
+          return redirectToImageProxy(`/media-api/omdb-image${safePath}`);
+        }
       }
 
       return res.status(404).json({ error: 'Origem de capa não permitida' });

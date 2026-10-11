@@ -8,6 +8,18 @@ import { logger } from '../utils/logger';
 const COMPONENT = 'PosterRoute';
 const router = Router();
 
+function preserveImageProxyToken(req: Request, target: string): string {
+  const token = typeof req.query.token === 'string' ? req.query.token : '';
+  if (!token || (!target.startsWith('/media-api/') && !target.startsWith('/api/'))) return target;
+
+  const parsed = new URL(target, 'http://media-server.invalid');
+  if (!/^\/(?:media-api|api)\/(?:tmdb-image|omdb-image|radarr-cover|sonarr-cover)(?:\/|$)/.test(parsed.pathname)) {
+    return target;
+  }
+  parsed.searchParams.set('token', token);
+  return `${parsed.pathname}${parsed.search}`;
+}
+
 /**
  * GET /api/poster/:mediaType/:id
  * 
@@ -22,9 +34,8 @@ const router = Router();
  * Responde com redirect 302 para a URL resolvida (passando pelo proxy
  * /api/tmdb-image quando for CDN do TMDB, evitando CORS).
  * 
- * ⚠️ Rota PÚBLICA de propósito: é usada em <img src> pelos componentes
- * (PosterImage/MediaCard/MediaPreviewModal), e <img> não envia o header
- * Authorization. Capas são imagens públicas do TMDB — sem dado sensível.
+ * Rota autenticada. O frontend acrescenta o JWT à URL desta imagem porque
+ * elementos <img> e o atributo poster de <video> não permitem headers customizados.
  */
 router.get('/:mediaType/:id', async (req: Request, res: Response) => {
   try {
@@ -37,25 +48,25 @@ router.get('/:mediaType/:id', async (req: Request, res: Response) => {
     if (!poster) {
       // Return a placeholder SVG instead of 404 to avoid console errors
       const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450"><rect fill="#1a1a2e" width="300" height="450"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-family="system-ui" font-size="14">${mediaType === 'movie' ? '🎬 Filme' : '📺 Série'}</text></svg>`;
-      res.set('Content-Type', 'image/svg+xml');
-      res.set('Cache-Control', 'public, max-age=86400');
+      res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.send(placeholderSvg);
     }
 
     const proxied = fixPosterUrl(poster, mediaType as 'movie' | 'series');
     if (!proxied) {
       const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450"><rect fill="#1a1a2e" width="300" height="450"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-family="system-ui" font-size="14">${mediaType === 'movie' ? '🎬 Filme' : '📺 Série'}</text></svg>`;
-      res.set('Content-Type', 'image/svg+xml');
-      res.set('Cache-Control', 'public, max-age=86400');
+      res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.send(placeholderSvg);
     }
 
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.redirect(302, proxied);
+    res.set('Cache-Control', 'private, no-store');
+    res.redirect(302, preserveImageProxyToken(req, proxied));
   } catch (err: any) {
-    logger.warn(COMPONENT, 'Poster resolve failed', { error: err.message });
+    logger.warn(COMPONENT, 'Poster resolve failed', {
+      errorCode: (err as NodeJS.ErrnoException).code || 'UPSTREAM_ERROR',
+    });
     const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450"><rect fill="#1a1a2e" width="300" height="450"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-family="system-ui" font-size="14">Erro</text></svg>`;
-    res.set('Content-Type', 'image/svg+xml');
+    res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
     return res.send(placeholderSvg);
   }
 });
@@ -83,8 +94,7 @@ router.get('/search/:mediaType/:title', async (req: Request, res: Response) => {
     const first = results[0];
     if (!first?.posterPath) {
       const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450"><rect fill="#1a1a2e" width="300" height="450"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-family="system-ui" font-size="14">${mediaType === 'movie' ? '🎬 Filme' : '📺 Série'}</text></svg>`;
-      res.set('Content-Type', 'image/svg+xml');
-      res.set('Cache-Control', 'public, max-age=86400');
+      res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.send(placeholderSvg);
     }
 
@@ -93,17 +103,18 @@ router.get('/search/:mediaType/:title', async (req: Request, res: Response) => {
     
     if (!proxied) {
       const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450"><rect fill="#1a1a2e" width="300" height="450"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-family="system-ui" font-size="14">${mediaType === 'movie' ? '🎬 Filme' : '📺 Série'}</text></svg>`;
-      res.set('Content-Type', 'image/svg+xml');
-      res.set('Cache-Control', 'public, max-age=86400');
+      res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.send(placeholderSvg);
     }
 
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.redirect(302, proxied);
+    res.set('Cache-Control', 'private, no-store');
+    res.redirect(302, preserveImageProxyToken(req, proxied));
   } catch (err: any) {
-    logger.warn(COMPONENT, 'Poster search failed', { error: err.message });
+    logger.warn(COMPONENT, 'Poster search failed', {
+      errorCode: (err as NodeJS.ErrnoException).code || 'UPSTREAM_ERROR',
+    });
     const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450"><rect fill="#1a1a2e" width="300" height="450"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-family="system-ui" font-size="14">Erro</text></svg>`;
-    res.set('Content-Type', 'image/svg+xml');
+    res.set({ 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
     return res.send(placeholderSvg);
   }
 });

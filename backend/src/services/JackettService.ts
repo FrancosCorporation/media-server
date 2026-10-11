@@ -49,7 +49,7 @@ async function getConfig(): Promise<JackettConfig> {
   const s = await Settings.findOne();
   return {
     url: s?.jackettUrl || process.env.JACKETT_URL || 'http://jackett:9117',
-    apiKey: s?.jackettApiKey || process.env.JACKETT_API_KEY || 'vbo5j8i3wybss03ex780wqjmc0n2nkmh',
+    apiKey: s?.jackettApiKey || process.env.JACKETT_API_KEY || '',
   };
 }
 
@@ -142,7 +142,10 @@ export async function searchJackett(
     logger.info(COMPONENT, `Jackett: ${results.length} PT-BR magnets (from ${items.length} hits) para "${query}"`);
     return results;
   } catch (err: any) {
-    logger.warn(COMPONENT, `Jackett failed: ${err.message}`);
+    logger.warn(COMPONENT, 'Jackett request failed', {
+      errorCode: typeof err.code === 'string' ? err.code : 'UPSTREAM_ERROR',
+      status: Number.isInteger(err.response?.status) ? err.response.status : undefined,
+    });
     return [];
   }
 }
