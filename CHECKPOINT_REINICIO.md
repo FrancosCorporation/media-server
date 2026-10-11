@@ -19,6 +19,15 @@ Continuar pelo `media-server`: revisar as pendências no `MELHORIAS.md` e no pla
 - `reference/ai-site-cloner`: `cd6eb34` commitado localmente. O push foi recusado com HTTP 403 pelo remoto `Mahanaicoach/ai-site-cloner`.
 - `base_fundation`: checkpoint local `e5750e6`; o push continua bloqueado porque um commit ancestral adiciona `.github/workflows/ci.yml` e a credencial GitHub não tem o escopo OAuth `workflow`.
 
+## Atualização após o login no GitHub
+
+Os repositórios originais do YouTube e do `ai-site-cloner` já eram públicos. O HTTP 403 ocorreu porque a conta `FrancosCorporation` tinha apenas permissão de leitura nesses projetos; tornar o repositório público não concede permissão de escrita. Para publicar os commits sem alterar os originais, foram criados forks públicos na organização `FrancosCorporation` e os commits foram enviados:
+
+- `youtube-automation-agent`: fork `FrancosCorporation/youtube-automation-agent`, branch `master`, atualizado até `767cb01` (`feat: add expressive video production pipeline`). O commit local foi rebaseado sobre a atualização `e26792a` do upstream e enviado sem force-push.
+- `ai-site-cloner`: fork `FrancosCorporation/ai-site-cloner`, branch `main`, atualizado até `cd6eb34` (`chore: sync lockfile package metadata`).
+
+Os remotes originais continuam configurados como `origin`; os forks estão configurados como `fork`. O login no navegador não muda as permissões dos repositórios originais. A auditoria geral continua em andamento e deve prosseguir pela fila do plano mestre.
+
 ## Arquivos locais preservados fora dos commits
 
 - `youtube_ai/youtube-automation-agent/data/browser-profiles/` contém perfil Chromium autenticado (cerca de 3,4 GB); `data/state/` e `data/kwai-app.flag` são estado operacional local. Foram adicionados ao `.gitignore`, sem apagar nada.
